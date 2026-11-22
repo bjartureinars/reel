@@ -1,0 +1,72 @@
+name: Reel
+options:
+  bundleIdPrefix: com.bjartur.reel
+  deploymentTarget:
+    macOS: "14.0"
+    tvOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    DEVELOPMENT_TEAM: 9U953J4FPN
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    DEAD_CODE_STRIPPING: YES
+targets:
+  ReelServer:
+    type: application
+    platform: macOS
+    sources: [Mac, Shared]
+    info:
+      path: Mac/Info.plist
+      properties:
+        CFBundleDisplayName: Reel Server
+        LSApplicationCategoryType: public.app-category.entertainment
+        NSLocalNetworkUsageDescription: Reel Server announces itself on your network so your Apple TV can find it.
+        NSBonjourServices: [_reel._tcp]
+        NSHumanReadableCopyright: Media server powered by Jellyfin (GPL-2.0).
+    settings:
+      base:
+        PRODUCT_NAME: Reel Server
+        PRODUCT_BUNDLE_IDENTIFIER: com.bjartur.reel.server
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # No sandbox: the app runs the Jellyfin server and reads your film folders.
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: NO
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: Apple Development
+        PROVISIONING_PROFILE_SPECIFIER: ""
+  Reel:
+    type: application
+    platform: tvOS
+    sources: [TV, Shared]
+    info:
+      path: TV/Info.plist
+      properties:
+        CFBundleDisplayName: Reel
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities: [arm64]
+        NSLocalNetworkUsageDescription: Reel looks for your Mac on the local network to play your films.
+        NSBonjourServices: [_reel._tcp]
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoadsForMedia: true
+          NSAllowsArbitraryLoads: true
+        UIUserInterfaceStyle: Dark
+    settings:
+      base:
+        PRODUCT_NAME: Reel
+        PRODUCT_BUNDLE_IDENTIFIER: com.bjartur.reel.tv
+        ASSETCATALOG_COMPILER_APPICON_NAME: App Icon & Top Shelf Image
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "3"
+schemes:
+  ReelServer:
+    build:
+      targets:
+        ReelServer: all
+  Reel:
+    build:
+      targets:
+        Reel: all
