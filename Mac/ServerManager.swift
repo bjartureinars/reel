@@ -64,6 +64,9 @@ final class ServerManager: ObservableObject {
     let cloud: CloudStore
     @Published private(set) var cloudProblem: String?
     private lazy var controlAPI = ControlAPI(server: self)
+    /// Supplies Reel for iPhone through Google Drive.
+    private(set) lazy var phone = PhoneBridge(server: self)
+    var currentUserId: String? { userId }
     private var process: Process?
     private var userId: String?
     private var folderIds: [LibraryKind: String] = [:]
@@ -125,6 +128,10 @@ final class ServerManager: ObservableObject {
         cloud.fasterUploads = UserDefaults.standard.bool(forKey: "fasterUploads")
         cloud.onFasterUploadsChanged = { UserDefaults.standard.set($0, forKey: "fasterUploads") }
         cloud.namesPlaying = { [weak self] in self?.namesBeingPlayed() ?? [] }
+        cloud.onRemoved = { [weak self] id in
+            guard let self else { return }
+            Task { await self.phone.forget(id) }
+        }
     }
 
     // MARK: Google Drive
@@ -183,6 +190,7 @@ final class ServerManager: ObservableObject {
             state = .running
             publishBonjour()
             startPolling()
+            phone.start()
             // The cloud disk's list can change before Jellyfin is up, when onFilmsChanged can't rescan.
             await rescan()
             await refreshLibraries()
@@ -196,6 +204,7 @@ final class ServerManager: ObservableObject {
     func stop() {
         stopping = true
         pollTask?.cancel()
+        phone.stop()
         bonjour?.stop()
         process?.terminate()
         controlAPI.stop()

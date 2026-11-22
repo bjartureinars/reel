@@ -5,6 +5,7 @@
 #   bash ~/Reel/setup.sh        everything
 #   bash ~/Reel/setup.sh mac    only the Mac app (and Jellyfin)
 #   bash ~/Reel/setup.sh tv     only the Apple TV app
+#   bash ~/Reel/setup.sh iphone only the iPhone app
 #
 # Progress is also written to setup.log next to this script.
 set -euo pipefail
@@ -27,9 +28,9 @@ xcodebuild -version >/dev/null 2>&1 || fail "Xcode isn't ready. Open Xcode once,
 
 step "Copying the project to $WORK"
 mkdir -p "$WORK/src" "$WORK/bin"
-rsync -a --delete --exclude setup.log --exclude '/movies' --exclude '*.xcodeproj' "$SRC/" "$WORK/src/"
+rsync -a --delete --exclude setup.log --exclude '/movies' --exclude '/.claude' --exclude '*.xcodeproj' "$SRC/" "$WORK/src/"
 
-if [[ "$MODE" != "tv" ]]; then
+if [[ "$MODE" != "tv" && "$MODE" != "iphone" ]]; then
     step "Jellyfin $JELLYFIN_VERSION (official build from jellyfin.org)"
     mkdir -p "$SUPPORT/downloads"
     DMG="$SUPPORT/downloads/jellyfin_${JELLYFIN_VERSION}-arm64.dmg"
@@ -67,7 +68,7 @@ cd "$WORK/src"
 "$XCODEGEN" generate --quiet
 echo "Generated Reel.xcodeproj"
 
-if [[ "$MODE" != "tv" ]]; then
+if [[ "$MODE" == "all" || "$MODE" == "mac" ]]; then
     step "Building Reel Server for this Mac"
     xcodebuild -project Reel.xcodeproj -scheme ReelServer -configuration Release \
         -derivedDataPath "$WORK/build" -quiet build \
@@ -90,7 +91,47 @@ if [[ "$MODE" != "tv" ]]; then
     open "$HOME/Applications/Reel Server.app"
 fi
 
-if [[ "$MODE" != "mac" ]]; then
+if [[ "$MODE" == "all" || "$MODE" == "iphone" ]]; then
+    step "Building the iPhone engine (FFmpeg, LGPL parts only)"
+    if [[ ! -f "$WORK/vendor/ffmpeg/iphoneos/lib/libavformat.a" ]]; then
+        [[ -f "$WORK/vendor/ffmpeg-8.1.3-download/ffmpeg-8.1.3.tar.xz" ]] || fail "The FFmpeg source isn't in $WORK/vendor. Ask Claude to fetch it again."
+        bash "$WORK/src/Tools/build-ffmpeg.sh" || fail "The iPhone engine didn't build."
+    else
+        echo "Already built."
+    fi
+
+    step "Looking for your iPhone"
+    PJSON=$(mktemp)
+    xcrun devicectl list devices --json-output "$PJSON" >/dev/null 2>&1 || true
+    PHONE=$(python3 - "$PJSON" <<'PY'
+import json, sys
+try:
+    devices = json.load(open(sys.argv[1]))["result"]["devices"]
+except Exception:
+    devices = []
+for d in devices:
+    hw = d.get("hardwareProperties", {})
+    if hw.get("platform") == "iOS" and hw.get("reality") == "physical" and hw.get("deviceType") == "iPhone" \
+            and d.get("connectionProperties", {}).get("pairingState") == "paired":
+        print(hw.get("udid") or d.get("identifier")); break
+PY
+)
+    [[ -n "$PHONE" ]] || fail "No paired iPhone. Connect it with a cable, unlock it, tap Trust, then run: bash ~/Reel/setup.sh iphone"
+
+    step "Building Reel for iPhone"
+    xcodebuild -project Reel.xcodeproj -scheme ReelPhone -configuration Release \
+        -destination "id=$PHONE" -derivedDataPath "$WORK/build" \
+        -allowProvisioningUpdates -allowProvisioningDeviceRegistration -quiet build \
+        || fail "Reel for iPhone didn't build. The errors are above."
+
+    step "Installing on your iPhone"
+    xcrun devicectl device install app --device "$PHONE" "$WORK/build/Build/Products/Release-iphoneos/Reel.app" \
+        || fail "Install failed. Unlock the iPhone, keep it connected, then run: bash ~/Reel/setup.sh iphone"
+    xcrun devicectl device process launch --device "$PHONE" com.bjartur.reel.phone >/dev/null 2>&1 || true
+    echo "Reel is installed on your iPhone. If it says Untrusted Developer: Settings → General → VPN & Device Management."
+fi
+
+if [[ "$MODE" == "all" || "$MODE" == "tv" ]]; then
     step "Looking for a paired Apple TV"
     JSON=$(mktemp)
     xcrun devicectl list devices --json-output "$JSON" >/dev/null 2>&1 || true

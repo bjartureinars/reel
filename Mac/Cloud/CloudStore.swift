@@ -156,6 +156,18 @@ final class CloudStore: ObservableObject {
     func downloadURL(_ id: UInt64) -> URL { paths.downloads.appendingPathComponent("\(id).film") }
     private func partialURL(_ id: UInt64) -> URL { paths.downloads.appendingPathComponent("\(id).part") }
     func film(_ id: UInt64) -> CloudFilm? { films.first { $0.id == id } }
+    /// For Reel for iPhone's files, which live next to the films.
+    var driveClient: DriveClient { drive }
+    /// Called after a film is removed, so its iPhone files go too.
+    var onRemoved: (UInt64) -> Void = { _ in }
+
+    /// The "Reel" folder in Drive.
+    func reelFolder() async throws -> String {
+        if let driveFolder { return driveFolder }
+        let found = try await drive.folder()
+        driveFolder = found
+        return found
+    }
 
     // MARK: Lifecycle
 
@@ -1082,6 +1094,7 @@ final class CloudStore: ObservableObject {
         errors[id] = nil
         films.removeAll { $0.id == id }
         commitList()
+        onRemoved(id)
     }
 
     // MARK: For the UI and the Apple TV

@@ -22,6 +22,31 @@ Started in a claude.ai session on 2026-11-21; moved here 2026-11-22.
 - **Not yet verified**: a real approval end to end, Download to Mac from real Drive (est. 21–27 min for 51 GB),
   Faster Uploads' read-back from real Drive, and playback and bitrate panel on the physical TV.
 
+## Reel for iPhone (built 2026-11-22, installed on his iPhone 15, iOS 26.6)
+
+- Bundle `com.bjartur.reel.phone`, target `ReelPhone`, iOS 18+, `bash ~/Reel/setup.sh iphone`. Streams the
+  **original** straight from Google Drive (no Mac in the path); downloads Original, or Medium/Low copies the Mac makes.
+- Sign-in: its own Google OAuth client "Reel iPhone" (iOS type, no secret) in `reel-515510`, created 2026-11-22
+  with his OK. drive.file grants are per project: confirmed 2026-11-22 that the phone sees the films and
+  details the Mac's Desktop client made.
+- Engine (`Engine/ReelEngine.c`): FFmpeg 8.1.3 LGPL parts, static, built by `Tools/build-ffmpeg.sh` into
+  `~/Developer/Reel/vendor/ffmpeg/<sdk>` (source tarball checked file by file against tag n8.1.3). Makes
+  fMP4 HLS segments on the phone, served to AVPlayer from 127.0.0.1: picture copied untouched, AC3/E-AC3/AAC
+  copied, DTS/DTS-HD/TrueHD/FLAC → ALAC (verified bit-exact), PGS/text subtitles drawn by the app.
+  Segments start on keyframes from the MKV index or every 4 s; decode times are the segment's sorted pts
+  minus a fixed delay, so any segment can be made alone after a seek and comes out identical.
+  Keep the H.264/HEVC decoders: without them HDR colour tags are lost (tested). iOS has no MKV, M2TS or DTS.
+- Mac side `Mac/Cloud/PhoneBridge.swift` (every 45 s): writes `reel=info` JSON per verified film (Jellyfin
+  details + artwork, Blu-ray track languages from the disc's .clpi, cached in defaults); syncs `reel=watch`
+  files ↔ Jellyfin UserData (`POST /UserItems/{id}/UserData`); makes `reel=copy` MKVs for `reel=request`s with
+  Jellyfin's ffmpeg (VideoToolbox HEVC; hw decode only for HEVC sources, Blu-ray H.264 is faster in software).
+  The phone lists only films that have an `info` file, so unverified or abandoned uploads never show.
+  Protocol in `Shared/PhoneShared.swift`. Removing a film in Reel Server bins its iPhone files too.
+- Downloads: background URLSession, 256 MB ranged pieces (fresh token per batch), MD5-checked against Drive.
+- Verified in the simulator with his real films read locally (DEBUG-only `REEL_FILE_<id>` hook): 4K HDR10 play,
+  resume, PGS subtitles, bitrate panel, Skyfall M2TS. Not yet verified: anything with real Drive on the phone,
+  downloads, Medium/Low copies end to end, watch sync with the TV, PiP, AirPlay.
+
 ## Next steps
 
 1. Skyfall cleanup is finished (2026-11-22: 49 clips in Drive's Bin, two local leftovers in the Mac's Trash).

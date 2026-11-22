@@ -209,6 +209,8 @@ struct UserData: Decodable {
     let playbackPositionTicks: Int64?
     let playedPercentage: Double?
     let played: Bool?
+    let isFavorite: Bool?
+    let lastPlayedDate: String?
 }
 
 struct MediaStream: Decodable {

@@ -4,6 +4,7 @@ options:
   deploymentTarget:
     macOS: "14.0"
     tvOS: "17.0"
+    iOS: "18.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -61,6 +62,44 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: App Icon & Top Shelf Image
         CODE_SIGN_STYLE: Automatic
         TARGETED_DEVICE_FAMILY: "3"
+  ReelPhone:
+    type: application
+    platform: iOS
+    # The engine and the Drive client are shared with Reel Server; FFmpeg comes from Tools/build-ffmpeg.sh.
+    sources: [Phone, Engine, Shared, Mac/Cloud/DriveClient.swift, Mac/Cloud/RemoteFile.swift]
+    info:
+      path: Phone/Info.plist
+      properties:
+        CFBundleDisplayName: Reel
+        UILaunchScreen:
+          UIColorName: ""
+        UIUserInterfaceStyle: Dark
+        UIStatusBarStyle: UIStatusBarStyleLightContent
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UIBackgroundModes: [audio, fetch]
+        BGTaskSchedulerPermittedIdentifiers: [com.bjartur.reel.phone.refresh]
+        CFBundleURLTypes:
+          - CFBundleURLName: Google sign-in
+            CFBundleURLSchemes: [com.googleusercontent.apps.170270400386-fajjl8hjvg2v1bc9t0s4p6lkoiv5tok3]
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        ITSAppUsesNonExemptEncryption: false
+        LSApplicationCategoryType: public.app-category.entertainment
+    settings:
+      base:
+        PRODUCT_NAME: Reel
+        PRODUCT_BUNDLE_IDENTIFIER: com.bjartur.reel.phone
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+        SWIFT_OBJC_BRIDGING_HEADER: Phone/Reel-Bridging-Header.h
+        HEADER_SEARCH_PATHS: ["$(SRCROOT)/Engine", "$(HOME)/Developer/Reel/vendor/ffmpeg/$(PLATFORM_NAME)/include"]
+        LIBRARY_SEARCH_PATHS: ["$(HOME)/Developer/Reel/vendor/ffmpeg/$(PLATFORM_NAME)/lib"]
+        OTHER_LDFLAGS: ["-lavformat", "-lavcodec", "-lswresample", "-lavutil", "-lz", "-liconv"]
+        GCC_C_LANGUAGE_STANDARD: gnu17
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
 schemes:
   ReelServer:
     build:
@@ -70,3 +109,7 @@ schemes:
     build:
       targets:
         Reel: all
+  ReelPhone:
+    build:
+      targets:
+        ReelPhone: all

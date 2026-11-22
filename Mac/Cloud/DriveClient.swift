@@ -159,7 +159,7 @@ final class DriveClient: @unchecked Sendable {
                           limit: about.storageQuota?.limit.flatMap { Int64($0) })
     }
 
-    private func list(_ query: String) async throws -> [DriveFile] {
+    func list(_ query: String) async throws -> [DriveFile] {
         struct Page: Decodable { let files: [DriveFile]; let nextPageToken: String? }
         var all: [DriveFile] = []
         var next: String?
@@ -209,6 +209,74 @@ final class DriveClient: @unchecked Sendable {
         } catch let error as DriveError where error.status == 404 {
             return
         }
+    }
+
+    /// Every file Reel can see that isn't in the Bin. With the drive.file scope that is only Reel's own files.
+    func everything() async throws -> [DriveFile] {
+        try await list("trashed=false")
+    }
+
+    /// A small file in one request.
+    func create(name: String, parent: String?, properties: [String: String], data: Data,
+                type: String = "application/json") async throws -> DriveFile {
+        let boundary = "reel-" + UUID().uuidString
+        var metadata: [String: Any] = ["name": name, "appProperties": properties, "mimeType": type]
+        if let parent { metadata["parents"] = [parent] }
+        var body = Data("--\(boundary)\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".utf8)
+        body += try JSONSerialization.data(withJSONObject: metadata)
+        body += Data("\r\n--\(boundary)\r\nContent-Type: \(type)\r\n\r\n".utf8)
+        body += data
+        body += Data("\r\n--\(boundary)--\r\n".utf8)
+        let target = url(uploadAPI, "files", ["uploadType": "multipart", "fields": Self.fileFields])
+        let (response, _) = try await perform({
+            var request = request("POST", target)
+            request.setValue("multipart/related; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+            return request
+        }, body: body)
+        return try JSONDecoder().decode(DriveFile.self, from: response)
+    }
+
+    /// Changes app properties. A nil value removes one.
+    @discardableResult
+    func update(_ id: String, properties: [String: String?]) async throws -> DriveFile {
+        let target = url(api, "files/\(id)", ["fields": Self.fileFields])
+        let values = properties.mapValues { $0.map { $0 as Any } ?? NSNull() }
+        let data = try await perform { request("PATCH", target, json: ["appProperties": values]) }.0
+        return try JSONDecoder().decode(DriveFile.self, from: data)
+    }
+
+    /// Replaces a small file's contents and, optionally, some of its app properties.
+    @discardableResult
+    func replace(_ id: String, data: Data, properties: [String: String]? = nil,
+                 type: String = "application/json") async throws -> DriveFile {
+        let boundary = "reel-" + UUID().uuidString
+        var body = Data("--\(boundary)\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".utf8)
+        body += try JSONSerialization.data(withJSONObject: properties.map { ["appProperties": $0] } ?? [:])
+        body += Data("\r\n--\(boundary)\r\nContent-Type: \(type)\r\n\r\n".utf8)
+        body += data
+        body += Data("\r\n--\(boundary)--\r\n".utf8)
+        let target = url(uploadAPI, "files/\(id)", ["uploadType": "multipart", "fields": Self.fileFields])
+        let (response, _) = try await perform({
+            var request = request("PATCH", target)
+            request.setValue("multipart/related; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+            return request
+        }, body: body)
+        return try JSONDecoder().decode(DriveFile.self, from: response)
+    }
+
+    /// A whole small file.
+    func contents(_ id: String) async throws -> Data {
+        let target = url(api, "files/\(id)", ["alt": "media"])
+        return try await perform { request("GET", target) }.0
+    }
+
+    /// The address and headers for reading a file, for background downloads.
+    func mediaRequest(_ id: String, range: ClosedRange<Int64>?) async throws -> URLRequest {
+        var request = URLRequest(url: url(api, "files/\(id)", ["alt": "media"]))
+        request.setValue("Bearer \(try await token(nil))", forHTTPHeaderField: "Authorization")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        if let range { request.setValue("bytes=\(range.lowerBound)-\(range.upperBound)", forHTTPHeaderField: "Range") }
+        return request
     }
 
     // MARK: Reading

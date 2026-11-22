@@ -13,11 +13,17 @@ Your own Apple TV film service, served from your Mac mini.
   4K HDR10 and Dolby Vision video is sent untouched (direct play, or remuxed bit-for-bit from MKV);
   only audio Apple TV can't decode (DTS, TrueHD) is converted to Dolby Digital Plus. Resume positions sync.
 
+- **Reel** (iPhone): streams the original film straight from Google Drive, anywhere, with no Mac in the way.
+  The picture is untouched; DTS and TrueHD sound becomes Apple Lossless on the phone with nothing lost; Blu-ray
+  subtitles are drawn by the app. Download films to watch offline, as the original or as a Medium (1080p) or
+  Low (720p) copy that Reel Server makes the first time someone asks. Where you got to syncs with the Apple TV.
+
 ## Set up
 
 1. Run `bash ~/Reel/setup.sh` in Terminal. It downloads Jellyfin (checksum-verified), builds
    Reel Server, installs it to ~/Applications and opens it.
 2. Pair the Apple TV with Xcode once (the script prints the steps), then run `bash ~/Reel/setup.sh tv`.
+3. For the iPhone, connect it with a cable and run `bash ~/Reel/setup.sh iphone`, then sign in with Google in Reel.
 3. Open Reel on the Apple TV. It shows a code; in Reel Server click **Connect Apple TV** and type it.
 
 Apps installed from Xcode with a paid developer account stay valid for a year; run `setup.sh tv` again to renew.

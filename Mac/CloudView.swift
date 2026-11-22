@@ -24,6 +24,7 @@ struct CloudView: View {
                     }
                 }
                 if cloud.connected { SpeedBox(cloud: cloud) }
+                PhoneBox(phone: server.phone)
                 DropFolderBox(folder: cloud.paths.drop)
                 if !cloud.pending.isEmpty {
                     Text("Waiting for Your OK").font(.title2.weight(.semibold))
@@ -38,6 +39,32 @@ struct CloudView: View {
             .frame(maxWidth: 780, alignment: .leading)
         }
         .navigationTitle("Google Drive")
+    }
+}
+
+/// Shown only while Reel is making a smaller copy for the iPhone, or when that went wrong.
+private struct PhoneBox: View {
+    @ObservedObject var phone: PhoneBridge
+
+    var body: some View {
+        if let job = phone.job {
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Making a \(job.quality.title) copy for iPhone", systemImage: "iphone").font(.headline)
+                    Text(job.filmName).foregroundStyle(.secondary)
+                    ProgressView(value: job.progress.progress ?? 0)
+                    Text(job.progress.phase == .uploading ? "Uploading to Google Drive" : "Converting")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(6)
+            }
+        } else if let problem = phone.lastProblem {
+            Label("iPhone: \(problem)", systemImage: "iphone.slash")
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
     }
 }
 

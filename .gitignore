@@ -9,6 +9,7 @@ movies/
 *.xcodeproj/
 Mac/Info.plist
 TV/Info.plist
+Phone/Info.plist
 build/
 DerivedData/
 xcuserdata/
@@ -16,3 +17,4 @@ xcuserdata/
 # Agent skill (reinstall with: npx skills add dickwu/apple-design-skill)
 .agents/
 .claude/skills/
+.claude/settings.local.json
