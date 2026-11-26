@@ -276,15 +276,38 @@ final class Library: ObservableObject {
         }
 
         let old = Dictionary(films.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        // Details that changed (or are new) are fetched 8 at a time: one by one, a first load of a big library took minutes.
+        var stale: [(index: Int, driveID: String)] = []
         for index in found.indices {
             let id = found[index].id
             guard let file = infos[id] else { continue }
             let revision = file.appProperties?["rev"] ?? file.md5Checksum ?? ""
             if let previous = old[id]?.info, UserDefaults.standard.string(forKey: Self.revisionKey(id)) == revision {
                 found[index].info = previous
-                continue
+            } else {
+                stale.append((index, file.id))
             }
-            if let data = try? await drive.contents(file.id), var info = try? JSONDecoder().decode(FilmInfo.self, from: data) {
+        }
+        var fetched: [Int: Data] = [:]
+        let drive = self.drive
+        await withTaskGroup(of: (Int, Data?).self) { group in
+            var next = 0
+            func add() {
+                guard next < stale.count else { return }
+                let item = stale[next]
+                next += 1
+                group.addTask { (item.index, try? await drive.contents(item.driveID)) }
+            }
+            for _ in 0..<8 { add() }
+            while let (index, data) = await group.next() {
+                if let data { fetched[index] = data }
+                add()
+            }
+        }
+        for (index, _) in stale {
+            let id = found[index].id
+            let revision = infos[id].map { $0.appProperties?["rev"] ?? $0.md5Checksum ?? "" } ?? ""
+            if let data = fetched[index], var info = try? JSONDecoder().decode(FilmInfo.self, from: data) {
                 if let poster = info.poster { try? poster.write(to: found[index].posterURL, options: .atomic) }
                 if let backdrop = info.backdrop { try? backdrop.write(to: found[index].backdropURL, options: .atomic) }
                 // Everything else is kept as it came, so fields added later (like an episode's show) survive.

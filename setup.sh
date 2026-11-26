@@ -7,6 +7,7 @@
 #   bash ~/Reel/setup.sh tv     only the Apple TV app
 #   bash ~/Reel/setup.sh iphone only the iPhone and iPad app (every connected iPhone and iPad)
 #   bash ~/Reel/setup.sh ipad   the same
+#   bash ~/Reel/setup.sh player only Reel for Mac, the player (installs to ~/Applications/Reel.app)
 #
 # Progress is also written to setup.log next to this script.
 set -euo pipefail
@@ -32,7 +33,7 @@ step "Copying the project to $WORK"
 mkdir -p "$WORK/src" "$WORK/bin"
 rsync -a --delete --exclude setup.log --exclude '/movies' --exclude '/tv shows' --exclude '/extras' --exclude '/.claude' --exclude '*.xcodeproj' "$SRC/" "$WORK/src/"
 
-if [[ "$MODE" != "tv" && "$MODE" != "iphone" ]]; then
+if [[ "$MODE" != "tv" && "$MODE" != "iphone" && "$MODE" != "player" ]]; then
     step "Jellyfin $JELLYFIN_VERSION (official build from jellyfin.org)"
     mkdir -p "$SUPPORT/downloads"
     DMG="$SUPPORT/downloads/jellyfin_${JELLYFIN_VERSION}-arm64.dmg"
@@ -101,6 +102,26 @@ if [[ "$MODE" == "all" || "$MODE" == "mac" ]]; then
     ditto "$BUILT" "$HOME/Applications/Reel Server.app"
     echo "Installed to ~/Applications/Reel Server.app"
     open "$HOME/Applications/Reel Server.app"
+fi
+
+if [[ "$MODE" == "all" || "$MODE" == "player" ]]; then
+    step "Building Reel for Mac (the player)"
+    if [[ ! -f "$WORK/vendor/ffmpeg/macosx/lib/libavformat.a" ]]; then
+        bash "$WORK/src/Tools/build-ffmpeg.sh" macosx || fail "The Mac engine didn't build."
+    fi
+    cd "$WORK/src"
+    xcodebuild -project Reel.xcodeproj -scheme ReelMac -configuration Release \
+        -derivedDataPath "$WORK/build" -quiet build \
+        || fail "Reel for Mac didn't build. The errors are above."
+    osascript -e 'tell application id "com.bjartur.reel.mac" to quit' >/dev/null 2>&1 || true
+    PLAYER_BIN="$HOME/Applications/Reel.app/Contents/MacOS/Reel"
+    for _ in $(seq 1 10); do pgrep -U "$(id -u)" -f "$PLAYER_BIN" >/dev/null || break; sleep 1; done
+    pkill -TERM -U "$(id -u)" -f "$PLAYER_BIN" 2>/dev/null || true
+    mkdir -p "$HOME/Applications"
+    rm -rf "$HOME/Applications/Reel.app"
+    ditto "$WORK/build/Build/Products/Release/Reel.app" "$HOME/Applications/Reel.app"
+    echo "Installed to ~/Applications/Reel.app"
+    open "$HOME/Applications/Reel.app"
 fi
 
 if [[ "$MODE" == "all" || "$MODE" == "iphone" ]]; then

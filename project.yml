@@ -120,7 +120,49 @@ targets:
         OTHER_LDFLAGS: ["-lavformat", "-lavcodec", "-lswresample", "-lavutil", "-lz", "-liconv"]
         GCC_C_LANGUAGE_STANDARD: gnu17
         ENABLE_USER_SCRIPT_SANDBOXING: YES
+  ReelMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "15.0"
+    # Reel for Mac: the iPhone and iPad app's code (Phone/), built natively for the Mac, plus MacPlayer/.
+    sources:
+      - path: Phone
+        excludes: ["Assets.xcassets", "Info.plist", "Reel-Bridging-Header.h"]
+      - Engine
+      - Shared
+      - Mac/Cloud/DriveClient.swift
+      - Mac/Cloud/RemoteFile.swift
+      - MacPlayer
+    info:
+      path: MacPlayer/Info.plist
+      properties:
+        CFBundleDisplayName: Reel
+        LSApplicationCategoryType: public.app-category.entertainment
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        ITSAppUsesNonExemptEncryption: false
+        NSHumanReadableCopyright: Plays your films from Google Drive. Uses FFmpeg (LGPL).
+    entitlements:
+      path: MacPlayer/ReelMac.entitlements
+    settings:
+      base:
+        PRODUCT_NAME: Reel
+        PRODUCT_BUNDLE_IDENTIFIER: com.bjartur.reel.mac
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: Apple Development
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        ENABLE_HARDENED_RUNTIME: NO
+        SWIFT_OBJC_BRIDGING_HEADER: Phone/Reel-Bridging-Header.h
+        HEADER_SEARCH_PATHS: ["$(SRCROOT)/Engine", "$(HOME)/Developer/Reel/vendor/ffmpeg/$(PLATFORM_NAME)/include"]
+        LIBRARY_SEARCH_PATHS: ["$(HOME)/Developer/Reel/vendor/ffmpeg/$(PLATFORM_NAME)/lib"]
+        OTHER_LDFLAGS: ["-lavformat", "-lavcodec", "-lswresample", "-lavutil", "-lz", "-liconv"]
+        GCC_C_LANGUAGE_STANDARD: gnu17
 schemes:
+  ReelMac:
+    build:
+      targets:
+        ReelMac: all
   ReelServer:
     build:
       targets:

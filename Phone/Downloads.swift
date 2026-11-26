@@ -1,7 +1,9 @@
 import CryptoKit
 import Foundation
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// A film saved on the phone, or on its way.
 struct Download: Codable, Identifiable, Equatable {
@@ -185,7 +187,7 @@ final class DownloadCenter: NSObject, ObservableObject {
         guard !topping, let library else { return }
         topping = true
         defer { topping = false }
-        let inBackground = UIApplication.shared.applicationState == .background
+        let inBackground = AppState.inBackground
         let window = inBackground ? 12 : 6
         for id in downloads.keys.sorted() {
             guard var download = downloads[id] else { continue }
@@ -369,7 +371,7 @@ extension DownloadCenter: URLSessionDownloadDelegate {
         Task { @MainActor in
             self.ended(task: id)
             if let (film, chunk) = parsed { self.running[film]?.remove(chunk) }
-            if UIApplication.shared.applicationState != .background { await self.topUp() }
+            if !AppState.inBackground { await self.topUp() }
         }
     }
 

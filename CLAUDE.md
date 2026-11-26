@@ -100,6 +100,21 @@ Started in a claude.ai session on 2026-11-21; moved here 2026-11-22.
   kept, copy uploaded/verified/deleted, Jellyfin Trailer owned by the film, watch progress (52 min) carried over.
   Not verified: the TV and iPhone screens on devices.
 
+## Reel for Mac, the player (2026-11-26)
+
+- Target `ReelMac` (macOS 15, bundle `com.bjartur.reel.mac`, product "Reel", **gold** icon in `MacPlayer/Assets.xcassets`);
+  Reel Server's icon is now **blue** (hue-shifted). `bash ~/Reel/setup.sh player` builds and installs `~/Applications/Reel.app`
+  (also part of `all`). Same code as Reel for iPhone/iPad: compiles `Phone/` (minus its assets/Info/bridging header), `Engine/`,
+  `Shared/`, DriveClient + RemoteFile, plus `MacPlayer/` (`ReelMacApp.swift`: one `Window`, Settings scene ⌘,, Go and Playback menus).
+- Platform switches live in `Phone/Support.swift` (`Device.isMac`, `reelSizeClass`, `.reelTrailing`, `reelClearNavigationBar()`,
+  `AppState`, `UIImage`/`UIColor` typealiases to NSImage/NSColor). On the Mac the player is an overlay that fills the window
+  (window toolbar hidden while playing), keyboard: space, ←/→, esc; hover shows controls; PiP via AVPictureInPictureController(playerLayer:).
+- **App Sandbox** (network client + server): its data is in its own container, apart from Reel Server's Application Support/Reel.
+  Its container can't be read from Terminal (TCC). Store must not use iOS file-protection write options on macOS (writes fail silently).
+- Signs in with the iOS OAuth client (works on macOS via ASWebAuthenticationSession). Library first load fetches details 8 at a time.
+- Verified 2026-11-26: sign-in, library, playing an Office extra from Drive. Not verified: 4K HDR/DV on this Mac's display,
+  downloads, PiP, AirPlay.
+
 ## Torrents straight to Google Drive (2026-11-25)
 
 - Magnet links open Reel Server (`CFBundleURLTypes` magnet; File → Add Magnet Link… ⇧⌘M). uTorrent is still his

@@ -55,9 +55,21 @@ struct PlayerView: View {
                 }
             }
         }
-        .statusBarHidden(!controlsVisible)
-        .persistentSystemOverlays(controlsVisible ? .automatic : .hidden)
+        .reelHidesSystemChrome(!controlsVisible)
         .preferredColorScheme(.dark)
+        #if os(macOS)
+        // A Mac player: moving the mouse shows the controls, and the keyboard plays, skips and closes.
+        .onContinuousHover { phase in
+            if case .active = phase, !controlsVisible { withAnimation(.easeInOut(duration: 0.2)) { controlsVisible = true } }
+            scheduleHide()
+        }
+        .focusable()
+        .focusEffectDisabled()
+        .onKeyPress(.space) { model.togglePlay(); return .handled }
+        .onKeyPress(.leftArrow) { skip(forward: false); return .handled }
+        .onKeyPress(.rightArrow) { skip(forward: true); return .handled }
+        .onKeyPress(.escape) { close(); return .handled }
+        #endif
         .onAppear {
             Orientation.lock(landscape: true)
             scheduleHide()
@@ -113,7 +125,7 @@ struct PlayerView: View {
 
     private func scheduleHide() {
         hideTask?.cancel()
-        guard controlsVisible, model.playing, !UIAccessibility.isVoiceOverRunning else { return }
+        guard controlsVisible, model.playing, !AppState.voiceOverRunning else { return }
         hideTask = Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled, scrubbing == nil else { return }
@@ -389,6 +401,74 @@ private struct SubtitleLayer: View {
     }
 }
 
+extension View {
+    /// The status bar and home indicator step aside with the controls on iPhone and iPad.
+    func reelHidesSystemChrome(_ hidden: Bool) -> some View {
+        #if os(iOS)
+        self.statusBarHidden(hidden).persistentSystemOverlays(hidden ? .hidden : .automatic)
+        #else
+        self
+        #endif
+    }
+}
+
+#if os(macOS)
+/// AVPlayer's picture, with Picture in Picture.
+private struct VideoSurface: NSViewRepresentable {
+    let player: AVPlayer
+    let fill: Bool
+    let onPictureInPicture: (AVPictureInPictureController?) -> Void
+
+    final class Surface: NSView {
+        let playerLayer = AVPlayerLayer()
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            wantsLayer = true
+            layer = CALayer()
+            layer?.backgroundColor = NSColor.black.cgColor
+            layer?.addSublayer(playerLayer)
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        override func layout() {
+            super.layout()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            playerLayer.frame = bounds
+            CATransaction.commit()
+        }
+    }
+
+    func makeNSView(context: Context) -> Surface {
+        let view = Surface()
+        view.playerLayer.player = player
+        let controller = AVPictureInPictureController(playerLayer: view.playerLayer)
+        DispatchQueue.main.async { onPictureInPicture(controller) }
+        return view
+    }
+
+    func updateNSView(_ view: Surface, context: Context) {
+        if view.playerLayer.player !== player { view.playerLayer.player = player }
+        view.playerLayer.videoGravity = fill ? .resizeAspectFill : .resizeAspect
+    }
+}
+
+private struct AirPlayButton: NSViewRepresentable {
+    func makeNSView(context: Context) -> AVRoutePickerView {
+        let view = AVRoutePickerView()
+        view.isRoutePickerButtonBordered = false
+        view.setRoutePickerButtonColor(.white, for: .normal)
+        view.setRoutePickerButtonColor(Theme.goldUI, for: .active)
+        return view
+    }
+
+    func updateNSView(_ view: AVRoutePickerView, context: Context) {}
+}
+
+/// Nothing to turn on a Mac.
+enum Orientation {
+    @MainActor static func lock(landscape: Bool) {}
+}
+#else
 /// AVPlayer's picture, with Picture in Picture.
 private struct VideoSurface: UIViewRepresentable {
     let player: AVPlayer
@@ -441,3 +521,4 @@ enum Orientation {
         }
     }
 }
+#endif

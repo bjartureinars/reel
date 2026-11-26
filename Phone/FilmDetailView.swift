@@ -10,7 +10,7 @@ struct FilmDetailView: View {
     @State private var confirmDelete = false
     @State private var expanded = false
     @State private var problem: String?
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.reelSizeClass) private var sizeClass
     private var regular: Bool { sizeClass == .regular }
 
     private var current: Film { library.film(film.id) ?? film }
@@ -50,8 +50,7 @@ struct FilmDetailView: View {
             .padding(.bottom, 32)
         }
         .ignoresSafeArea(edges: .top)
-        .toolbarBackground(.hidden, for: .navigationBar)
-        .navigationBarTitleDisplayMode(.inline)
+        .reelClearNavigationBar()
         .confirmationDialog("Download Quality", isPresented: $choosingQuality, titleVisibility: .visible) {
             ForEach(CopyQuality.allCases) { quality in
                 Button(qualityLabel(quality)) { start(quality) }
@@ -270,10 +269,8 @@ private struct ActionButton: View {
             .frame(maxWidth: .infinity, minHeight: 56)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
-        .accessibilityAddTraits(.isButton)
+        .buttonStyle(.plain)
     }
 }
 
@@ -364,7 +361,7 @@ private struct ExtraRow: View {
     let film: Film
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var library: Library
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.reelSizeClass) private var sizeClass
 
     var body: some View {
         Button { app.play(film) } label: {

@@ -1,7 +1,11 @@
 import AuthenticationServices
 import CryptoKit
 import Foundation
+#if canImport(UIKit)
 import UIKit
+#else
+import AppKit
+#endif
 
 /// Google sign-in for the iPhone: Google's own page in a secure browser sheet, PKCE, no secret in the app.
 /// The only permission asked for is `drive.file`, so Reel sees just the files Reel itself put in Drive.
@@ -28,7 +32,11 @@ final class GoogleAccount: NSObject, ObservableObject, ASWebAuthenticationPresen
 
     nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         MainActor.assumeIsolated {
+            #if os(macOS)
+            NSApplication.shared.keyWindow ?? ASPresentationAnchor()
+            #else
             UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first ?? ASPresentationAnchor()
+            #endif
         }
     }
 

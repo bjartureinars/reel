@@ -1,10 +1,102 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#else
+import AppKit
+#endif
 
-/// "iPhone" or "iPad", for text that names the device Reel is running on.
+/// "iPhone", "iPad" or "Mac", for text that names the device Reel is running on.
 enum Device {
+    #if os(macOS)
+    /// The Mac gets the wide layout everywhere.
+    static let isPad = true
+    static let isMac = true
+    static let name = "Mac"
+    #else
     static let isPad = UIDevice.current.userInterfaceIdiom == .pad
+    static let isMac = false
     static let name = isPad ? "iPad" : "iPhone"
+    #endif
 }
+
+/// Compact on an iPhone (and an iPad sharing its screen), regular on a wide iPad and on the Mac.
+enum ReelSizeClass { case compact, regular }
+
+extension EnvironmentValues {
+    var reelSizeClass: ReelSizeClass {
+        #if os(iOS)
+        horizontalSizeClass == .regular ? .regular : .compact
+        #else
+        .regular
+        #endif
+    }
+}
+
+extension ToolbarItemPlacement {
+    /// Top right on iPhone and iPad; the toolbar's main place on the Mac.
+    static var reelTrailing: ToolbarItemPlacement {
+        #if os(iOS)
+        .topBarTrailing
+        #else
+        .primaryAction
+        #endif
+    }
+}
+
+extension View {
+    /// The backdrop shows through the bar on iPhone and iPad; the Mac keeps its window toolbar.
+    func reelClearNavigationBar() -> some View {
+        #if os(iOS)
+        self.toolbarBackground(.hidden, for: .navigationBar).navigationBarTitleDisplayMode(.inline)
+        #else
+        self
+        #endif
+    }
+}
+
+extension View {
+    /// A context menu with a peek preview on iPhone and iPad. On the Mac a preview isn't shown, and with one the
+    /// menu took over the click, so posters didn't open.
+    @ViewBuilder
+    func reelContextMenu<M: View, P: View>(@ViewBuilder menuItems: () -> M, @ViewBuilder preview: () -> P) -> some View {
+        #if os(iOS)
+        contextMenu(menuItems: menuItems, preview: preview)
+        #else
+        contextMenu(menuItems: menuItems)
+        #endif
+    }
+}
+
+enum AppState {
+    static var voiceOverRunning: Bool {
+        #if os(iOS)
+        UIAccessibility.isVoiceOverRunning
+        #else
+        NSWorkspace.shared.isVoiceOverEnabled
+        #endif
+    }
+
+    static var inBackground: Bool {
+        #if os(iOS)
+        UIApplication.shared.applicationState == .background
+        #else
+        false
+        #endif
+    }
+}
+
+#if os(macOS)
+typealias UIImage = NSImage
+typealias UIColor = NSColor
+
+extension NSImage {
+    func preparingForDisplay() -> NSImage? { self }
+}
+
+extension Image {
+    init(uiImage: NSImage) { self.init(nsImage: uiImage) }
+}
+#endif
 
 /// Sizes that grow with the screen. Regular width means an iPad that isn't sharing its screen with a narrow app.
 enum Metrics {
@@ -95,6 +187,11 @@ enum Store {
 
     static func save<T: Encodable>(_ value: T, as name: String) {
         guard let data = try? JSONEncoder().encode(value) else { return }
-        try? data.write(to: Folders.support.appendingPathComponent(name), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        #if os(iOS)
+        let options: Data.WritingOptions = [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+        #else
+        let options: Data.WritingOptions = [.atomic]   // macOS has no file protection classes: with one, the write fails
+        #endif
+        try? data.write(to: Folders.support.appendingPathComponent(name), options: options)
     }
 }

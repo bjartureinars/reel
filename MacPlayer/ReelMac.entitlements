@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- A sandboxed Mac app: its data stays in its own container, apart from Reel Server's. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- Google Drive and sign-in. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- The player's own stream to AVPlayer, on 127.0.0.1 only. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+</dict>
+</plist>

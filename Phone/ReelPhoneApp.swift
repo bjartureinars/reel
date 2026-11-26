@@ -1,7 +1,10 @@
+#if os(iOS)
 import BackgroundTasks
+#endif
 import Network
 import SwiftUI
 
+#if os(iOS)
 final class AppDelegate: NSObject, UIApplicationDelegate {
     static let refreshTask = "com.bjartur.reel.phone.refresh"
 
@@ -54,6 +57,8 @@ final class SceneDelegate: NSObject, UIWindowSceneDelegate {
         completionHandler(true)
     }
 }
+
+#endif
 
 enum AppTab: Hashable {
     case home, films, shows, downloads, settings, search
@@ -113,6 +118,7 @@ final class AppModel: ObservableObject {
         }
     }
 
+    #if os(iOS)
     // MARK: Home Screen quick actions
 
     /// Resume what you were watching, plus Search and Downloads (home-screen-quick-actions.md: high-value tasks).
@@ -151,6 +157,8 @@ final class AppModel: ObservableObject {
         try? BGTaskScheduler.shared.submit(request)
     }
 
+    #endif
+
     /// While the Mac makes a copy, check on it every 30 seconds.
     func keepChecking() async {
         while !Task.isCancelled {
@@ -162,6 +170,7 @@ final class AppModel: ObservableObject {
     }
 }
 
+#if os(iOS)
 @main
 struct ReelPhoneApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
@@ -194,6 +203,8 @@ struct ReelPhoneApp: App {
     }
 }
 
+#endif
+
 struct RootView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var account: GoogleAccount
@@ -212,9 +223,22 @@ struct RootView: View {
                 SignInView()
             }
         }
+        #if os(iOS)
         .fullScreenCover(isPresented: $player.isPresented, onDismiss: { player.close() }) {
             PlayerView(model: player)
         }
+        #else
+        // On the Mac the film fills the window, like Apple's TV app; full screen is the window's own (⌃⌘F).
+        .overlay {
+            if player.isPresented {
+                PlayerView(model: player)
+                    .transition(.opacity)
+                    .onDisappear { player.close() }
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: player.isPresented)
+        .toolbar(player.isPresented ? .hidden : .automatic, for: .windowToolbar)
+        #endif
         .alert("Stream Over Mobile Data?", isPresented: Binding(get: { app.cellularPrompt != nil },
                                                                 set: { if !$0 { app.cellularPrompt = nil } })) {
             Button("Play") {
@@ -252,7 +276,8 @@ struct MainTabs: View {
             }
             .badge(downloads.downloads.values.filter { $0.state != .ready }.count)
             // iPhone has room for five tabs without a More tab; its Settings open from Home.
-            if Device.isPad {
+            // The Mac keeps settings in its Settings window (⌘,).
+            if Device.isPad && !Device.isMac {
                 Tab("Settings", systemImage: "gearshape.fill", value: AppTab.settings) {
                     NavigationStack { SettingsView() }
                 }

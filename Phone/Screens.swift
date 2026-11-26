@@ -148,7 +148,9 @@ struct HomeView: View {
         .navigationDestination(for: Film.self) { FilmDetailView(film: $0) }
         .navigationDestination(for: Show.self) { ShowDetailView(show: $0) }
         .refreshable { await library.refresh() }
+        #if os(iOS)
         .toolbar(.hidden, for: .navigationBar)
+        #endif
     }
 }
 
@@ -156,7 +158,7 @@ private struct HeroBanner: View {
     let film: Film
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var library: Library
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.reelSizeClass) private var sizeClass
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -232,7 +234,7 @@ struct LibraryView: View {
     @EnvironmentObject private var library: Library
     @AppStorage("library.sort") private var sort = Sort.added.rawValue
     @State private var genre: String?
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.reelSizeClass) private var sizeClass
     private var regular: Bool { sizeClass == .regular }
 
     enum Sort: String, CaseIterable, Identifiable {
@@ -267,7 +269,7 @@ struct LibraryView: View {
         .navigationDestination(for: Film.self) { FilmDetailView(film: $0) }
         .refreshable { await library.refresh() }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .reelTrailing) {
                 Menu {
                     Picker("Sort By", selection: $sort) {
                         ForEach(Sort.allCases) { Text($0.rawValue).tag($0.rawValue) }
@@ -302,7 +304,7 @@ struct SearchView: View {
         recentText = ([trimmed] + recent.filter { $0.caseInsensitiveCompare(trimmed) != .orderedSame })
             .prefix(8).joined(separator: "\n")
     }
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.reelSizeClass) private var sizeClass
     private var regular: Bool { sizeClass == .regular }
 
     var body: some View {
@@ -542,7 +544,7 @@ struct SettingsView: View {
 
             Section {
                 LabeledContent("Streaming Quality", value: "Original")
-                Toggle("Stream Over Mobile Data", isOn: $app.streamOverCellular)
+                if !Device.isMac { Toggle("Stream Over Mobile Data", isOn: $app.streamOverCellular) }
                 Toggle("Show Live Bitrate", isOn: $showBitrate)
                 Picker("Subtitles", selection: $subtitleLanguage) {
                     Text("Off").tag("")
@@ -561,7 +563,9 @@ struct SettingsView: View {
                     Text("Original").tag("original")
                     Text("Custom").tag("custom")
                 }
-                Toggle("Download Over Mobile Data", isOn: Binding(get: { downloads.overCellular }, set: { downloads.setCellular($0) }))
+                if !Device.isMac {
+                    Toggle("Download Over Mobile Data", isOn: Binding(get: { downloads.overCellular }, set: { downloads.setCellular($0) }))
+                }
                 LabeledContent("Used by Downloads", value: downloads.usedSpace.fileSize)
                 LabeledContent("Free on \(Device.name)", value: Folders.freeSpace.fileSize)
                 if !downloads.downloads.isEmpty {
@@ -587,6 +591,7 @@ struct SettingsView: View {
                 }
             }
         }
+        .formStyle(.grouped)
         .navigationTitle("Settings")
         .task {
             if account.email == nil, account.isSignedIn, let quota = try? await library.drive.quota() { account.email = quota.email }

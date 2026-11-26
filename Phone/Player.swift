@@ -60,6 +60,9 @@ final class PlayerModel: ObservableObject {
     private var lastSaved = Date.distantPast
     private weak var library: Library?
     private var opening: Task<Void, Never>?
+    #if os(macOS)
+    private var awake: NSObjectProtocol?
+    #endif
 
     // MARK: Opening
 
@@ -160,7 +163,9 @@ final class PlayerModel: ObservableObject {
 
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 40
+        #if os(iOS)
         item.externalMetadata = metadata()
+        #endif
         let player = self.player ?? AVPlayer()
         player.defaultRate = speed   // play() uses it, so the speed survives pausing
         player.allowsExternalPlayback = false
@@ -203,9 +208,14 @@ final class PlayerModel: ObservableObject {
     }
 
     private func observe(_ player: AVPlayer) {
+        #if os(iOS)
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         try? AVAudioSession.sharedInstance().setActive(true)
         UIApplication.shared.isIdleTimerDisabled = true
+        #else
+        // Keeps the display awake while a film plays.
+        awake = ProcessInfo.processInfo.beginActivity(options: [.idleDisplaySleepDisabled, .userInitiated], reason: "Playing a film")
+        #endif
         let periodic = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 4), queue: .main) { [weak self] time in
             MainActor.assumeIsolated { self?.tick(time.seconds) }
         }
@@ -341,7 +351,12 @@ final class PlayerModel: ObservableObject {
         cues = []
         film = nil
         preparing = false
+        #if os(iOS)
         UIApplication.shared.isIdleTimerDisabled = false
+        #else
+        if let awake { ProcessInfo.processInfo.endActivity(awake) }
+        awake = nil
+        #endif
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 

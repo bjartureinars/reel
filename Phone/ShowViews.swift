@@ -5,7 +5,7 @@ import SwiftUI
 struct ShowsView: View {
     @EnvironmentObject private var library: Library
     @AppStorage("shows.sort") private var sort = Sort.added.rawValue
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.reelSizeClass) private var sizeClass
     private var regular: Bool { sizeClass == .regular }
 
     enum Sort: String, CaseIterable, Identifiable {
@@ -38,7 +38,7 @@ struct ShowsView: View {
         .navigationDestination(for: Film.self) { FilmDetailView(film: $0) }
         .refreshable { await library.refresh() }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .reelTrailing) {
                 Menu {
                     Picker("Sort By", selection: $sort) {
                         ForEach(Sort.allCases) { Text($0.rawValue).tag($0.rawValue) }
@@ -54,7 +54,7 @@ struct ShowsView: View {
 struct ShowCard: View {
     let show: Show
     var fixedWidth: CGFloat?
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.reelSizeClass) private var sizeClass
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var library: Library
 
@@ -78,8 +78,9 @@ struct ShowCard: View {
                     .frame(width: width, alignment: .leading)
             }
         }
+        .accessibilityLabel("\(show.title), \(show.episodes.count == 1 ? "1 episode" : "\(show.episodes.count) episodes")")
         .buttonStyle(.plain)
-        .contextMenu {
+        .reelContextMenu {
             if let next = library.nextEpisode(of: show) {
                 let label = next.episodeLabel ?? ""
                 Button(library.resumeSeconds(next) > 0 ? "Resume \(label)" : "Play \(label)", systemImage: "play.fill") {
@@ -101,9 +102,6 @@ struct ShowCard: View {
             .frame(width: 320, alignment: .leading)
             .background(Color(white: 0.11))
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(show.title), \(show.episodes.count == 1 ? "1 episode" : "\(show.episodes.count) episodes")")
-        .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -119,7 +117,7 @@ struct ShowDetailView: View {
     @State private var confirmSeasonRemoval = false
     @EnvironmentObject private var downloads: DownloadCenter
     @AppStorage("downloadQuality") private var downloadQuality = "original"
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.reelSizeClass) private var sizeClass
     private var regular: Bool { sizeClass == .regular }
 
     /// The latest from the library, so progress and new episodes show up while the page is open.
@@ -164,8 +162,7 @@ struct ShowDetailView: View {
             .padding(.bottom, 32)
         }
         .ignoresSafeArea(edges: .top)
-        .toolbarBackground(.hidden, for: .navigationBar)
-        .navigationBarTitleDisplayMode(.inline)
+        .reelClearNavigationBar()
         .navigationDestination(for: Film.self) { FilmDetailView(film: $0) }
     }
 
@@ -284,7 +281,7 @@ struct EpisodeRow: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var library: Library
     @EnvironmentObject private var downloads: DownloadCenter
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.reelSizeClass) private var sizeClass
 
     private var stillWidth: CGFloat { sizeClass == .regular ? 220 : 150 }
 
@@ -332,7 +329,7 @@ struct EpisodeRow: View {
             }
             .accessibilityLabel("Details for \(film.title)")
         }
-        .contextMenu { FilmMenu(film: film) } preview: { FilmPreview(film: film) }
+        .reelContextMenu { FilmMenu(film: film) } preview: { FilmPreview(film: film) }
     }
 
     private var detail: String {

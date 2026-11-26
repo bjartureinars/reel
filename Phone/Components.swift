@@ -48,7 +48,7 @@ struct PosterCard: View {
 
     @EnvironmentObject private var library: Library
     @EnvironmentObject private var downloads: DownloadCenter
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.reelSizeClass) private var sizeClass
 
     init(film: Film, width: CGFloat? = nil) {
         self.film = film
@@ -83,11 +83,10 @@ struct PosterCard: View {
                     .frame(width: width, alignment: .leading)
             }
         }
-        .buttonStyle(.plain)
-        .contextMenu { FilmMenu(film: film) } preview: { FilmPreview(film: film) }
-        .accessibilityElement(children: .ignore)
+        // The label goes on the link itself, so VoiceOver (and on the Mac, any accessibility press) opens the film.
         .accessibilityLabel(accessibilityText)
-        .accessibilityAddTraits(.isButton)
+        .buttonStyle(.plain)
+        .reelContextMenu { FilmMenu(film: film) } preview: { FilmPreview(film: film) }
     }
 
     private var accessibilityText: String {
@@ -106,7 +105,7 @@ struct WideCard: View {
 
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var library: Library
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.reelSizeClass) private var sizeClass
 
     private var width: CGFloat { Metrics.wide(sizeClass == .regular) }
 
@@ -115,13 +114,13 @@ struct WideCard: View {
             Group {
                 if playsDirectly {
                     Button { app.play(film) } label: { artwork }
-                        .contextMenu {
+                        .reelContextMenu {
                             FilmMenu(film: film, inContinueWatching: true)
                             Section { NavigationLink(value: film) { Label("Details", systemImage: "info.circle") } }
                         } preview: { FilmPreview(film: film) }
                 } else {
                     NavigationLink(value: film) { artwork }
-                        .contextMenu { FilmMenu(film: film) } preview: { FilmPreview(film: film) }
+                        .reelContextMenu { FilmMenu(film: film) } preview: { FilmPreview(film: film) }
                 }
             }
             .buttonStyle(.plain)
@@ -186,7 +185,7 @@ struct ProgressLine: View {
 struct Shelf<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.reelSizeClass) private var sizeClass
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {

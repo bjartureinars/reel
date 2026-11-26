@@ -36,7 +36,10 @@ Your own Apple TV film service, served from your Mac mini.
   <img src="docs/screenshots/mac-film-extras.png" width="380" alt="Reel Server: a film's extras">
 </p>
 
-Also: TV shows with seasons and Next Up, several versions of a film with a default, trailers and other extras,
+Also: TV shows with seasons and Next Up, several versions of a film with a default, trailers and other extras,- **Reel** (Mac): the same player as on iPhone and iPad, as a native Mac app: a sidebar, menus, keyboard control
+  (space, arrow keys, Esc), Picture in Picture and AirPlay. It streams from Google Drive too, so it doesn't need
+  Reel Server. Its icon is gold like the other players; Reel Server's is blue.
+
 UHD Blu-ray Dolby Vision played as Dolby Vision, and magnet links downloaded straight to Google Drive in 1 GB
 parts so a 100 GB film never needs 100 GB on the Mac.
 
@@ -46,6 +49,7 @@ parts so a 100 GB film never needs 100 GB on the Mac.
    Reel Server, installs it to ~/Applications and opens it.
 2. Pair the Apple TV with Xcode once (the script prints the steps), then run `bash ~/Reel/setup.sh tv`.
 3. For the iPhone, connect it with a cable and run `bash ~/Reel/setup.sh iphone`, then sign in with Google in Reel.
+   For Reel on the Mac, run `bash ~/Reel/setup.sh player` (installs ~/Applications/Reel.app), then sign in with Google.
 3. Open Reel on the Apple TV. It shows a code; in Reel Server click **Connect Apple TV** and type it.
 
 Apps installed from Xcode with a paid developer account stay valid for a year; run `setup.sh tv` again to renew.
