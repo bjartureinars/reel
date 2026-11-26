@@ -18,6 +18,28 @@ Your own Apple TV film service, served from your Mac mini.
   subtitles are drawn by the app. Download films to watch offline, as the original or as a Medium (1080p) or
   Low (720p) copy that Reel Server makes the first time someone asks. Where you got to syncs with the Apple TV.
 
+## Screenshots
+
+**Reel for iPhone and iPad:** Continue Watching, Next Up, films and TV shows, streamed straight from Google Drive.
+
+<p>
+  <img src="docs/screenshots/iphone-home.png" width="280" alt="Reel on iPhone: Home with Continue Watching and Next Up">
+  <img src="docs/screenshots/ipad-home.png" width="420" alt="Reel on iPad: Home">
+</p>
+
+**Reel Server (Mac):** the library, TV shows, and each film's details, versions and extras.
+
+<img src="docs/screenshots/mac-films.png" width="720" alt="Reel Server: Films library">
+<img src="docs/screenshots/mac-tv-shows.png" width="720" alt="Reel Server: TV Shows">
+<p>
+  <img src="docs/screenshots/mac-film-details.png" width="380" alt="Reel Server: a film's details">
+  <img src="docs/screenshots/mac-film-extras.png" width="380" alt="Reel Server: a film's extras">
+</p>
+
+Also: TV shows with seasons and Next Up, several versions of a film with a default, trailers and other extras,
+UHD Blu-ray Dolby Vision played as Dolby Vision, and magnet links downloaded straight to Google Drive in 1 GB
+parts so a 100 GB film never needs 100 GB on the Mac.
+
 ## Set up
 
 1. Run `bash ~/Reel/setup.sh` in Terminal. It downloads Jellyfin (checksum-verified), builds
