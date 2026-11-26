@@ -5,7 +5,8 @@ import Foundation
 ///
 /// Every file Reel keeps in Drive has an app property `reel` saying what it is:
 /// - `film` / `part`: a film, whole or in pieces (made by Reel Server's upload).
-/// - `info`: a film's details and artwork as JSON (Reel Server writes it).
+/// - `info`: a film's or episode's details and artwork as JSON (Reel Server writes it).
+/// - `show`: a TV show's details and artwork as JSON, one per show (Reel Server writes it).
 /// - `copy`: a smaller version of a film for downloading (Reel Server makes it when asked).
 /// - `request`: the phone asking for a copy (the phone creates it, Reel Server reports progress on it).
 /// - `watch`: where you got to, watched and My List, kept the same on the phone and the Apple TV.
@@ -14,6 +15,7 @@ enum PhoneDrive {
     static let film = "film"
     static let part = "part"
     static let info = "info"
+    static let show = "show"
     static let copy = "copy"
     static let request = "request"
     static let watch = "watch"
@@ -78,6 +80,50 @@ struct FilmInfo: Codable, Equatable {
     let sound: String?
     /// Track languages the file itself doesn't record (Blu-ray discs keep them in their index), by MPEG-TS PID.
     let languages: [String: String]
+    /// Pictures travel in the Drive file; the phone keeps them as files and drops them from its saved copy.
+    var poster: Data?
+    var backdrop: Data?
+    /// For an episode: its show, season and number (its picture is a still from it, in `backdrop`). nil for a film.
+    var episode: EpisodeRef? = nil
+    /// For one of several versions of a film: which film, its name, and whether Play uses it.
+    var filmVersion: VersionRef? = nil
+    /// For bonus material: whose, and what kind.
+    var extra: ExtraRef? = nil
+}
+
+struct VersionRef: Codable, Equatable, Hashable {
+    /// The default version's film id; every version of the film has the same one.
+    let rootID: String
+    let label: String
+    let isDefault: Bool
+}
+
+struct ExtraRef: Codable, Equatable, Hashable {
+    let rootID: String
+    let kind: ExtraKind
+    let title: String
+}
+
+struct EpisodeRef: Codable, Equatable, Hashable {
+    /// Jellyfin's id for the show; the `show` file with the same id describes it.
+    let showID: String
+    let show: String
+    let season: Int
+    let number: Int
+}
+
+/// A TV show's details and artwork, written by Reel Server from Jellyfin.
+struct ShowInfo: Codable, Equatable {
+    var version = PhoneDrive.infoVersion
+    let showID: String
+    let title: String
+    let sortTitle: String?
+    let year: Int?
+    let rating: String?
+    let overview: String?
+    let genres: [String]
+    let people: [FilmInfo.Person]
+    let studio: String?
     let poster: Data?
     let backdrop: Data?
 }
@@ -184,5 +230,55 @@ enum ClipLanguages {
             }
         }
         return out
+    }
+}
+
+/// What kind of bonus material an extra is. `folder` is the subfolder name Jellyfin recognises as that kind.
+enum ExtraKind: String, Codable, CaseIterable, Identifiable {
+    case trailer, behindTheScenes, featurette, deletedScene, interview, short, other
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .trailer: return "Trailer"
+        case .behindTheScenes: return "Behind the Scenes"
+        case .featurette: return "Featurette"
+        case .deletedScene: return "Deleted Scene"
+        case .interview: return "Interview"
+        case .short: return "Short"
+        case .other: return "Extra"
+        }
+    }
+
+    var folder: String {
+        switch self {
+        case .trailer: return "trailers"
+        case .behindTheScenes: return "behind the scenes"
+        case .featurette: return "featurettes"
+        case .deletedScene: return "deleted scenes"
+        case .interview: return "interviews"
+        case .short: return "shorts"
+        case .other: return "extras"
+        }
+    }
+
+    /// Jellyfin's ExtraType for the kind, as the Apple TV sees it.
+    init(jellyfin type: String?) {
+        switch (type ?? "").lowercased() {
+        case "trailer": self = .trailer
+        case "behindthescenes": self = .behindTheScenes
+        case "featurette": self = .featurette
+        case "deletedscene": self = .deletedScene
+        case "interview": self = .interview
+        case "short": self = .short
+        default: self = .other
+        }
+    }
+}
+
+extension ExtraKind: Comparable {
+    static func < (a: ExtraKind, b: ExtraKind) -> Bool {
+        (allCases.firstIndex(of: a) ?? 0) < (allCases.firstIndex(of: b) ?? 0)
     }
 }

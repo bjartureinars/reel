@@ -22,7 +22,7 @@ struct PlayerView: View {
                 if let player = model.player {
                     VideoSurface(player: player, fill: fill) { pip = $0 }
                         .ignoresSafeArea()
-                        .accessibilityLabel(model.film?.title ?? "Video")
+                        .accessibilityLabel(model.film?.fullTitle ?? "Video")
                 }
                 SubtitleLayer(cues: model.cues, video: videoRect(in: geometry.size), lifted: controlsVisible)
                     .ignoresSafeArea()
@@ -140,7 +140,10 @@ struct PlayerView: View {
                 Spacer()
                 if !model.preparing { centreButtons }
                 Spacer()
-                if !model.preparing { scrubber }
+                if !model.preparing {
+                    scrubber
+                    bottomRow
+                }
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
@@ -154,7 +157,7 @@ struct PlayerView: View {
                 Image(systemName: "xmark").font(.title3.weight(.semibold)).frame(width: 44, height: 44)
             }
             .accessibilityLabel("Close")
-            Text(model.film?.title ?? "")
+            Text(model.film?.fullTitle ?? "")
                 .font(.headline)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -166,7 +169,9 @@ struct PlayerView: View {
                     }
                     .accessibilityLabel("Picture in Picture")
                 }
+                // Opening a menu keeps the controls (and so the menu) from fading away under it.
                 TrackMenu(model: model)
+                    .simultaneousGesture(TapGesture().onEnded { hideTask?.cancel() })
                 Button { showBitrate.toggle() } label: {
                     Image(systemName: showBitrate ? "gauge.with.dots.needle.67percent" : "gauge.with.dots.needle.33percent")
                         .font(.title3).frame(width: 44, height: 44)
@@ -196,6 +201,40 @@ struct PlayerView: View {
             .accessibilityLabel("Forward 10 Seconds")
         }
         .shadow(color: .black.opacity(0.4), radius: 8)
+    }
+
+    /// Speed, and for an episode, the next one.
+    private var bottomRow: some View {
+        HStack(spacing: 20) {
+            Menu {
+                Picker("Speed", selection: Binding(get: { model.speed }, set: { model.setSpeed($0); scheduleHide() })) {
+                    ForEach([Float(0.5), 0.75, 1, 1.25, 1.5, 2], id: \.self) { value in
+                        Text(Self.speedText(value)).tag(value)
+                    }
+                }
+            } label: {
+                Label("Speed (\(Self.speedText(model.speed)))", systemImage: "gauge.with.needle")
+                    .font(.subheadline.weight(.medium))
+                    .frame(minHeight: 44)
+            }
+            .simultaneousGesture(TapGesture().onEnded { hideTask?.cancel() })
+            .accessibilityLabel("Playback Speed")
+            .accessibilityValue(Self.speedText(model.speed))
+            Spacer()
+            if let next = model.nextEpisode {
+                Button { model.playNext() } label: {
+                    Label("Next Episode", systemImage: "forward.end.fill")
+                        .font(.subheadline.weight(.medium))
+                        .frame(minHeight: 44)
+                }
+                .accessibilityHint("Plays \(next.episodeLabel ?? ""), \(next.title)")
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    static func speedText(_ value: Float) -> String {
+        value == 1 ? "Normal" : String(format: value == value.rounded() ? "%.0f×" : "%g×", value)
     }
 
     private var scrubber: some View {

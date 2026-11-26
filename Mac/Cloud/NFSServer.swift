@@ -40,7 +40,8 @@ final class NFSServer {
 
     private enum Node {
         case root
-        case folder(Int)
+        /// A folder by its path from the root: "Films", or "TV Shows/Friends/Season 01".
+        case folder(String)
         case file(DiskFile)
     }
 
@@ -213,10 +214,36 @@ final class NFSServer {
         }
     }
 
+    /// Top folders keep the ids they always had (2, 3, …). Folders inside them (a show, a season) get ids from
+    /// their path, above the range film ids are drawn from, so they stay the same from one run to the next.
+    private func folderID(_ path: String) -> UInt64 {
+        if let index = folders.firstIndex(of: path) { return UInt64(2 + index) }
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325   // FNV-1a
+        for byte in path.precomposedStringWithCanonicalMapping.utf8 {
+            hash = (hash ^ UInt64(byte)) &* 0x0000_0100_0000_01b3
+        }
+        return (1 << 62) | (hash & ((1 << 62) - 1))
+    }
+
+    /// Every folder that has something in it, below the top ones.
+    private func innerFolders(_ files: [DiskFile]) -> Set<String> {
+        var found = Set<String>()
+        for file in files {
+            var parts = file.folder.split(separator: "/").map(String.init)
+            while parts.count > 1 {
+                found.insert(parts.joined(separator: "/"))
+                parts.removeLast()
+            }
+        }
+        return found
+    }
+
     private func node(_ id: UInt64) -> Node? {
         if id == Self.rootID { return .root }
-        if id >= 2, id < UInt64(2 + folders.count) { return .folder(Int(id - 2)) }
-        return source.files().first { $0.id == id }.map(Node.file)
+        if id >= 2, id < UInt64(2 + folders.count) { return .folder(folders[Int(id - 2)]) }
+        let files = source.files()
+        if id >= 1 << 62 { return innerFolders(files).first { folderID($0) == id }.map(Node.folder) }
+        return files.first { $0.id == id }.map(Node.file)
     }
 
     private func children(of id: UInt64, _ node: Node) -> [(name: String, id: UInt64, node: Node)]? {
@@ -224,10 +251,17 @@ final class NFSServer {
         case .file: return nil
         case .root:
             return [(".", id, node), ("..", id, node)]
-                + folders.enumerated().map { ($0.element, UInt64(2 + $0.offset), Node.folder($0.offset)) }
-        case .folder(let index):
-            return [(".", id, node), ("..", Self.rootID, Node.root)]
-                + source.files().filter { $0.folder == folders[index] }
+                + folders.map { ($0, folderID($0), Node.folder($0)) }
+        case .folder(let path):
+            let files = source.files()
+            let parentPath = path.split(separator: "/").dropLast().joined(separator: "/")
+            let parent: (UInt64, Node) = parentPath.isEmpty ? (Self.rootID, .root) : (folderID(parentPath), .folder(parentPath))
+            let inner = innerFolders(files)
+                .filter { $0.hasPrefix(path + "/") && !$0.dropFirst(path.count + 1).contains("/") }
+                .sorted()
+                .map { (String($0.dropFirst(path.count + 1)), folderID($0), Node.folder($0)) }
+            return [(".", id, node), ("..", parent.0, parent.1)] + inner
+                + files.filter { $0.folder == path }
                     .sorted { $0.id < $1.id }
                     .map { ($0.name, $0.id, Node.file($0)) }
         }

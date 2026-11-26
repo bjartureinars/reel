@@ -5,6 +5,8 @@ import os
 struct CloudPaths {
     /// The folder films are dropped into.
     let drop: URL
+    /// The folder TV shows are dropped into: Show/Season/episode, or loose episodes.
+    let shows: URL
     /// The one temporarily downloaded film.
     let downloads: URL
     /// Catalog and bitrate measurements.
@@ -15,7 +17,7 @@ struct CloudPaths {
 
 struct CloudFilm: Codable, Identifiable, Equatable {
     let id: UInt64
-    var folder: String          // "Films" or "Home Videos"
+    var folder: String          // "Films", or "TV Shows/<Show>/Season NN" for an episode
     var name: String            // unique within the folder; also the name on the cloud disk
     var size: Int64
     var modified: Date
@@ -36,7 +38,33 @@ struct CloudFilm: Codable, Identifiable, Equatable {
     /// The exact version of the original that was approved. Without it nothing is uploaded or deleted.
     var approvedStamp: FileStamp?
 
+    // Versions and extras. A film's group is named after its default version: other versions point to it with
+    // `versionOf`, extras with `extraOf`. Nothing moves in Drive; only the cloud disk shows the group as a folder.
+    /// Another version of the film with this id (the default version). nil for a default version or a film alone.
+    var versionOf: UInt64?
+    /// The version's name in the Versions list: "4K", "Blu-ray".
+    var versionLabel: String?
+    /// Bonus material of the film with this id (the default version).
+    var extraOf: UInt64?
+    var extraKind: ExtraKind?
+    var extraTitle: String?
+    /// The group's folder on the cloud disk, "Title (Year)", kept on the default version.
+    var groupFolder: String?
+
     var isApproved: Bool { originalStamp != nil && approvedStamp == originalStamp }
+
+    var isEpisode: Bool { folder.hasPrefix(CloudStore.showsFolder + "/") }
+    var show: String? { Self.show(inFolder: folder) }
+
+    static func show(inFolder folder: String) -> String? {
+        let parts = folder.split(separator: "/", omittingEmptySubsequences: false)
+        return parts.count == 3 && parts[0] == CloudStore.showsFolder[...] ? String(parts[1]) : nil
+    }
+
+    static func season(inFolder folder: String) -> Int? {
+        guard show(inFolder: folder) != nil, let last = folder.split(separator: "/").last else { return nil }
+        return Int(last.filter(\.isNumber))
+    }
 
     var remote: RemoteFile? {
         if let driveID { return RemoteFile(pieces: [.init(id: driveID, offset: 0, size: size)]) }
@@ -69,7 +97,14 @@ struct CloudJob: Equatable {
 /// - A downloaded copy is only ever deleted for a film that is verified in Drive.
 @MainActor
 final class CloudStore: ObservableObject {
-    static let folders = ["Films", "Home Videos"]
+    /// The cloud disk's top folders. Their order fixes their NFS ids, so new ones go at the end.
+    nonisolated static let folders = ["Films", "Home Videos", "TV Shows"]
+    nonisolated static let showsFolder = "TV Shows"
+
+    /// A folder a film in Drive may say it belongs in.
+    nonisolated static func isKnownFolder(_ folder: String) -> Bool {
+        folders.contains(folder) || CloudFilm.show(inFolder: folder) != nil
+    }
     nonisolated private static let uploadChunk = 64 << 20
     nonisolated private static let partChunk = 24 << 20
     /// Connections left to uploading while a film plays, so the stream keeps the Wi-Fi.
@@ -175,7 +210,7 @@ final class CloudStore: ObservableObject {
     func start() async throws {
         guard !started else { return }
         let fm = FileManager.default
-        for folder in [paths.drop, paths.downloads, paths.state, paths.state.appendingPathComponent("bitrate")] {
+        for folder in [paths.drop, paths.shows, paths.downloads, paths.state, paths.state.appendingPathComponent("bitrate")] {
             try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         }
         if fm.fileExists(atPath: catalogURL.path) {
@@ -303,11 +338,178 @@ final class CloudStore: ObservableObject {
             } else if let original = film.originalPath {
                 local = [original]
             }
+            let place = place(film)
             return CloudDisk.Route(
-                file: DiskFile(id: film.id, folder: film.folder, name: film.name, size: film.size, modified: film.modified),
+                file: DiskFile(id: film.id, folder: place.folder, name: place.name, size: film.size, modified: film.modified),
                 localPaths: local,
                 remote: film.verified ? film.remote : nil)
         })
+    }
+
+    // MARK: Versions and extras
+
+    /// The default version of the group a film belongs to, or nil if it's on its own.
+    func groupRoot(_ film: CloudFilm) -> CloudFilm? {
+        if let root = film.versionOf ?? film.extraOf { return self.film(root) }
+        return films.contains { $0.versionOf == film.id || $0.extraOf == film.id } ? film : nil
+    }
+
+    /// The default version first, then the others by name.
+    func versions(of root: UInt64) -> [CloudFilm] {
+        guard let first = self.film(root) else { return [] }
+        return [first] + films.filter { $0.versionOf == root }
+            .sorted { ($0.versionLabel ?? $0.name).localizedStandardCompare($1.versionLabel ?? $1.name) == .orderedAscending }
+    }
+
+    func extras(of root: UInt64) -> [CloudFilm] {
+        films.filter { $0.extraOf == root }.sorted {
+            ($0.extraKind ?? .other, $0.extraTitle ?? $0.name) < ($1.extraKind ?? .other, $1.extraTitle ?? $1.name)
+        }
+    }
+
+    /// Where a film appears on the cloud disk. A film with versions or extras gets a folder of its own, laid out
+    /// the way Jellyfin expects: "Title (Year)/Title (Year) - Label.mkv" for each version, and extras in
+    /// "Title (Year)/trailers/…", "Title (Year)/behind the scenes/…" and so on.
+    func place(_ film: CloudFilm) -> (folder: String, name: String) {
+        guard film.folder == "Films", let root = groupRoot(film) else { return (film.folder, film.name) }
+        let group = Self.safeName(root.groupFolder ?? (root.name as NSString).deletingPathExtension)
+        let ext = (film.name as NSString).pathExtension
+        let dot = ext.isEmpty ? "" : ".\(ext)"
+        if film.extraOf != nil {
+            let kind = film.extraKind ?? .other
+            let title = Self.safeName(film.extraTitle ?? (film.name as NSString).deletingPathExtension)
+            let siblings = extras(of: root.id).filter { ($0.extraKind ?? .other) == kind }
+            let same = siblings.filter { Self.safeName($0.extraTitle ?? ($0.name as NSString).deletingPathExtension) == title }
+            let number = same.count > 1 ? " (\((same.firstIndex { $0.id == film.id } ?? 0) + 1))" : ""
+            return ("Films/\(group)/\(kind.folder)", "\(title)\(number)\(dot)")
+        }
+        let label = Self.safeName(film.versionLabel ?? (film.id == root.id ? "Default" : "Version"))
+        let siblings = versions(of: root.id).filter { Self.safeName($0.versionLabel ?? "") == label }
+        let number = siblings.count > 1 ? " \((siblings.firstIndex { $0.id == film.id } ?? 0) + 1)" : ""
+        return ("Films/\(group)", "\(group) - \(label)\(number)\(dot)")
+    }
+
+    /// The name a film has on the cloud disk (what Jellyfin and the players see).
+    func diskName(_ film: CloudFilm) -> String { place(film).name }
+
+    nonisolated static func safeName(_ text: String) -> String {
+        let cleaned = text.replacingOccurrences(of: #"[/:\\]"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+        return cleaned.isEmpty ? "Film" : cleaned
+    }
+
+    /// Makes `id` another version of `root`. A film that had versions or extras of its own brings them along.
+    func addVersion(_ id: UInt64, to root: UInt64, label: String, groupFolder: String, rootLabel: String) throws {
+        guard let film = self.film(id), let main = self.film(root), id != root else { return }
+        guard film.folder == "Films", main.folder == "Films" else { throw CloudError("Only films can have versions.") }
+        guard main.versionOf == nil, main.extraOf == nil else { throw CloudError("Add versions to the film’s default version.") }
+        for index in films.indices where films[index].versionOf == id || films[index].extraOf == id {
+            if films[index].versionOf == id { films[index].versionOf = root } else { films[index].extraOf = root }
+        }
+        edit(root) {
+            if $0.groupFolder == nil { $0.groupFolder = groupFolder }
+            if $0.versionLabel == nil { $0.versionLabel = rootLabel }
+        }
+        edit(id) { $0.versionOf = root; $0.extraOf = nil; $0.versionLabel = label; $0.groupFolder = nil }
+        commitList()
+    }
+
+    /// Play uses the default version, and the group is listed under it.
+    func makeDefault(_ id: UInt64) {
+        guard let film = self.film(id), let root = film.versionOf, let old = self.film(root) else { return }
+        for index in films.indices {
+            if films[index].versionOf == root, films[index].id != id { films[index].versionOf = id }
+            if films[index].extraOf == root { films[index].extraOf = id }
+        }
+        edit(root) { $0.versionOf = id; $0.groupFolder = nil }
+        edit(id) { $0.versionOf = nil; $0.groupFolder = old.groupFolder }
+        commitList()
+    }
+
+    func renameVersion(_ id: UInt64, label: String) {
+        let clean = label.trimmingCharacters(in: .whitespaces)
+        guard !clean.isEmpty else { return }
+        edit(id) { $0.versionLabel = clean }
+        commitList()
+    }
+
+    /// Takes a version out of its group: it becomes a film of its own again.
+    func separate(_ id: UInt64) {
+        guard let film = self.film(id) else { return }
+        if film.versionOf == nil, let next = films.first(where: { $0.versionOf == id }) {
+            makeDefault(next.id)
+        }
+        edit(id) { $0.versionOf = nil; $0.extraOf = nil; $0.extraKind = nil; $0.extraTitle = nil; $0.groupFolder = nil }
+        commitList()
+    }
+
+    /// Makes a film already in the library an extra of `root`.
+    func makeExtra(_ id: UInt64, of root: UInt64, kind: ExtraKind, title: String, groupFolder: String) throws {
+        guard let film = self.film(id), let main = self.film(root), id != root else { return }
+        guard main.folder == "Films", film.folder == "Films" else { throw CloudError("Only films can have extras.") }
+        guard !films.contains(where: { $0.versionOf == id || $0.extraOf == id }) else {
+            throw CloudError("“\(film.name)” has versions or extras of its own.")
+        }
+        if main.groupFolder == nil { edit(root) { $0.groupFolder = groupFolder } }
+        edit(id) { $0.extraOf = root; $0.versionOf = nil; $0.extraKind = kind; $0.extraTitle = title; $0.groupFolder = nil }
+        commitList()
+    }
+
+    func editExtra(_ id: UInt64, kind: ExtraKind, title: String) {
+        let clean = title.trimmingCharacters(in: .whitespaces)
+        edit(id) { $0.extraKind = kind; if !clean.isEmpty { $0.extraTitle = clean } }
+        commitList()
+    }
+
+    /// An extra from anywhere on this Mac. Choosing it here is the approval; a copy goes in a hidden folder inside
+    /// the drop folder and takes the usual way (upload, check, then the copy is deleted). The original stays.
+    func addExtra(from file: URL, to root: UInt64, kind: ExtraKind, title: String, groupFolder: String) async throws {
+        guard let main = self.film(root), main.folder == "Films" else { throw CloudError("Only films can have extras.") }
+        let folder = paths.drop.appendingPathComponent(".reel-extras", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let copy = folder.appendingPathComponent("\(UUID().uuidString).\(file.pathExtension)")
+        try await Task.detached(priority: .userInitiated) { try FileManager.default.copyItem(at: file, to: copy) }.value
+        guard let stamp = FileStamp(path: copy.path) else { throw CloudError("Reel couldn’t read the copy.") }
+        if quota?.free.map({ $0 < stamp.size }) == true { throw CloudError("Google Drive doesn’t have room for it.") }
+        var film = CloudFilm(id: UInt64.random(in: 1 << 32..<1 << 62), folder: "Films",
+                             name: uniqueName(file.lastPathComponent, in: "Films"), size: stamp.size,
+                             modified: stamp.modified, originalPath: copy.path, originalStamp: stamp)
+        film.approvedStamp = stamp
+        film.extraOf = root
+        film.extraKind = kind
+        film.extraTitle = title
+        if self.film(root)?.groupFolder == nil { edit(root) { $0.groupFolder = groupFolder } }
+        films.append(film)
+        commitList()
+        startNextJob()
+    }
+
+    // MARK: From torrents
+
+    /// A film or episode a torrent download put in Drive part by part. Every byte passed the torrent's own hash
+    /// check and every part's MD5 matched Google's, so it arrives verified, like a finished Faster Upload.
+    /// Sync may have found the complete set first; then it's already here.
+    func adoptFromTorrent(id: UInt64, folder: String, name: String, size: Int64, parts: [UploadPart], partSet: String) {
+        guard film(id) == nil, !discarded.contains(id) else { return }
+        var film = CloudFilm(id: id, folder: folder, name: uniqueName(name, in: folder), size: size, modified: Date(),
+                             verified: true)
+        film.parts = parts
+        film.partSet = partSet
+        guard film.remote != nil else { return }
+        films.append(film)
+        commitList()
+    }
+
+    /// Gives a film a new folder and name (a torrent's episode under its real show, a disc clip under the film's
+    /// title). The Drive files keep the new folder too, so a fresh install files it the same way.
+    func refile(_ id: UInt64, folder: String, name: String) async {
+        guard let film = film(id), film.folder != folder || film.name != name, Self.isKnownFolder(folder) else { return }
+        let unique = film.folder == folder && film.name == name ? name : uniqueName(name, in: folder)
+        edit(id) { $0.folder = folder; $0.name = unique }
+        commitList()
+        let files = (film.parts?.compactMap(\.driveID) ?? []) + [film.driveID].compactMap { $0 }
+        for file in files { _ = try? await drive.update(file, properties: ["folder": folder]) }
     }
 
     private func uniqueName(_ wanted: String, in folder: String) -> String {
@@ -328,8 +530,8 @@ final class CloudStore: ObservableObject {
         guard !scanning else { return }
         scanning = true
         defer { scanning = false }
-        let root = paths.drop
-        var found = await Task.detached { DropInspector.scan(root) }.value
+        let root = paths.drop, shows = paths.shows
+        var found = await Task.detached { DropInspector.scan(root) + DropInspector.scan(shows, shows: true) }.value
         let now = Date()
         var seen: [String: (stamp: FileStamp, since: Date)] = [:]
         for item in found {
@@ -469,7 +671,7 @@ final class CloudStore: ObservableObject {
                       let size = remote.byteCount, let name = remote.name else { continue }
                 // Films already known are left alone. Others were uploaded by an earlier install of Reel.
                 guard !discarded.contains(id), film(id) == nil, !films.contains(where: { $0.driveID == remote.id }) else { continue }
-                let folder = properties["folder"].flatMap { Self.folders.contains($0) ? $0 : nil } ?? "Films"
+                let folder = properties["folder"].flatMap { Self.isKnownFolder($0) ? $0 : nil } ?? "Films"
                 let modified = properties["modified"].flatMap { Double($0) }.map(Date.init(timeIntervalSince1970:))
                 films.append(CloudFilm(id: id, folder: folder, name: uniqueName(name, in: folder), size: size,
                                        modified: modified ?? Date(), driveID: remote.id, md5: remote.md5Checksum,
@@ -504,7 +706,7 @@ final class CloudStore: ObservableObject {
                 return UploadPart(offset: offset, size: size, received: size, driveID: file.id)
             }.sorted { $0.offset < $1.offset }
             guard parts.count == count else { return nil }
-            let folder = first["folder"].flatMap { Self.folders.contains($0) ? $0 : nil } ?? "Films"
+            let folder = first["folder"].flatMap { Self.isKnownFolder($0) ? $0 : nil } ?? "Films"
             let modified = first["modified"].flatMap { Double($0) }.map(Date.init(timeIntervalSince1970:))
             var film = CloudFilm(id: id, folder: folder, name: name, size: total, modified: modified ?? Date(), verified: true)
             film.parts = parts
@@ -892,7 +1094,7 @@ final class CloudStore: ObservableObject {
         // The record of the Drive copy must be on disk before the original goes.
         try save()
         publishRoutes()
-        try Self.delete(path, ifStill: stamp, inside: paths.drop)
+        try Self.delete(path, ifStill: stamp, inside: isInside(path, paths.shows) ? paths.shows : paths.drop)
         log.notice("Verified in Drive; deleted original \(path, privacy: .private)")
         edit(id) { $0.originalPath = nil; $0.originalStamp = nil }
     }
@@ -910,6 +1112,11 @@ final class CloudStore: ObservableObject {
     }
 
     /// Renames first, so a file that appears at the same path meanwhile can't be the one that's deleted.
+    private func isInside(_ path: String, _ root: URL) -> Bool {
+        let base = root.resolvingSymlinksInPath().path
+        return URL(fileURLWithPath: path).resolvingSymlinksInPath().path.hasPrefix(base + "/")
+    }
+
     nonisolated static func delete(_ path: String, ifStill stamp: FileStamp, inside root: URL) throws {
         let folder = URL(fileURLWithPath: path).deletingLastPathComponent().resolvingSymlinksInPath().path
         let base = root.resolvingSymlinksInPath().path
@@ -960,7 +1167,7 @@ final class CloudStore: ObservableObject {
         let playing = namesPlaying()
         let others = films.filter { $0.id != id && $0.verified }
         let reclaimable = others
-            .filter { $0.downloaded && !playing.contains($0.name) }
+            .filter { $0.downloaded && !playing.contains(diskName($0)) }
             .reduce(0) { $0 + $1.size }
             + others.reduce(0) { $0 + (FileStamp(path: partialURL($1.id).path)?.size ?? 0) }
         let needed = film.size - (FileStamp(path: partialURL(id).path)?.size ?? 0) + Self.spaceMargin
@@ -1060,7 +1267,7 @@ final class CloudStore: ObservableObject {
     }
 
     func offload(_ id: UInt64) {
-        guard let film = film(id), film.verified, !namesPlaying().contains(film.name) else { return }
+        guard let film = film(id), film.verified, !namesPlaying().contains(diskName(film)) else { return }
         downloadTasks[id]?.cancel()
         try? FileManager.default.removeItem(at: downloadURL(id))
         try? FileManager.default.removeItem(at: partialURL(id))
@@ -1076,7 +1283,16 @@ final class CloudStore: ObservableObject {
     /// Removes a film from the library. Both copies stay recoverable: Drive's Bin and the Mac's Trash.
     func remove(_ id: UInt64) async throws {
         guard let film = film(id) else { return }
-        guard !namesPlaying().contains(film.name) else { throw CloudError("Stop playing the film first.") }
+        guard !namesPlaying().contains(diskName(film)) else { throw CloudError("Stop playing the film first.") }
+        // A default version hands the group to the next version; with none, its extras go with it.
+        if film.versionOf == nil, film.extraOf == nil {
+            if let next = films.first(where: { $0.versionOf == id }) {
+                makeDefault(next.id)
+                separate(id)
+            } else {
+                for extra in extras(of: id) { try await remove(extra.id) }
+            }
+        }
         if workingOn == id {
             worker?.cancel()
             await worker?.value
@@ -1103,9 +1319,13 @@ final class CloudStore: ObservableObject {
     func film(atDiskPath path: String) -> CloudFilm? {
         guard path.hasPrefix(paths.mount.path + "/") else { return nil }
         let parts = path.dropFirst(paths.mount.path.count + 1).split(separator: "/")
-        guard parts.count == 2 else { return nil }
-        let name = parts[1].precomposedStringWithCanonicalMapping
-        return films.first { $0.folder == parts[0] && $0.name.precomposedStringWithCanonicalMapping == name }
+        guard parts.count >= 2 else { return nil }
+        let name = parts[parts.count - 1].precomposedStringWithCanonicalMapping
+        let folder = parts.dropLast().joined(separator: "/").precomposedStringWithCanonicalMapping
+        return films.first {
+            let place = place($0)
+            return place.folder.precomposedStringWithCanonicalMapping == folder && place.name.precomposedStringWithCanonicalMapping == name
+        }
     }
 
     func bitrates(_ id: UInt64) -> [Double] {
@@ -1141,8 +1361,11 @@ final class CloudStore: ObservableObject {
             phase = .cloud
             detail = "In Google Drive"
         }
+        let grouped = film.extraOf == nil && groupRoot(film) != nil && versions(of: groupRoot(film)!.id).count > 1
         return FilmStatus(phase: phase, size: film.size, detail: detail, progress: job?.progress,
-                          megabitsPerSecond: job?.megabitsPerSecond, secondsLeft: job?.secondsLeft, error: errors[film.id])
+                          megabitsPerSecond: job?.megabitsPerSecond, secondsLeft: job?.secondsLeft, error: errors[film.id],
+                          versionLabel: grouped ? film.versionLabel : nil, isDefaultVersion: grouped ? film.versionOf == nil : nil,
+                          extraTitle: film.extraOf != nil ? film.extraTitle : nil)
     }
 }
 

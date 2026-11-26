@@ -3,6 +3,8 @@ import SwiftUI
 /// The detail page's controls. A Google Drive film offers Stream and Download to Mac; other films just play.
 struct FilmActions: View {
     let item: Item
+    /// For a film with several versions, the one these buttons play and download (the default version).
+    var version: String? = nil
     @EnvironmentObject private var session: AppSession
     @State private var status: FilmStatus?
     @State private var loaded = false
@@ -37,7 +39,7 @@ struct FilmActions: View {
             .padding(.top, 6)
             .focusSection()
         }
-        .task(id: item.id) { await poll() }
+        .task(id: "\(item.id)-\(version ?? "")") { await poll() }
     }
 
     @ViewBuilder private var buttons: some View {
@@ -79,7 +81,7 @@ struct FilmActions: View {
     }
 
     private func play(_ seconds: Double, _ source: PlaybackSource) {
-        Task { await PlaybackController.shared.play(item, from: seconds, session: session, source: source) }
+        Task { await PlaybackController.shared.play(item, from: seconds, session: session, source: source, version: version) }
     }
 
     private func act(_ action: String) {
@@ -87,7 +89,7 @@ struct FilmActions: View {
         working = true
         Task {
             do {
-                status = try await CloudClient(jellyfin: client).perform(action, item.id)
+                status = try await CloudClient(jellyfin: client).perform(action, version ?? item.id)
             } catch {
                 session.actionError = error.localizedDescription
             }
@@ -100,7 +102,7 @@ struct FilmActions: View {
         let cloud = CloudClient(jellyfin: client)
         while !Task.isCancelled {
             do {
-                let latest = try await cloud.status(item.id)
+                let latest = try await cloud.status(version ?? item.id)
                 status = latest
                 loaded = true
                 if latest == nil { return } // an ordinary library film; nothing to watch

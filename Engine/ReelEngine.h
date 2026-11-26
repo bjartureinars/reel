@@ -35,6 +35,7 @@ typedef struct {
     bool untouched;       // false when sound is converted
     bool lossless;
     ReelRange range;
+    int dolbyVision;      // Dolby Vision profile as it plays (5 or 8), 0 for none
     double frameRate;
 } ReelStream;
 
@@ -74,6 +75,10 @@ double reel_segment_duration(const ReelMedia *media, int segment);
 int reel_segment(ReelMedia *media, int segment, uint8_t **init, int *initSize,
                  uint8_t **data, int *dataSize, ReelSegmentInfo *info);
 void reel_free(void *pointer);
+
+/// How HLS names what plays, after reel_select: `codecs` like "hvc1.2.4.L153.B0,alac", and for Dolby Vision
+/// `supplemental` like "dvh1.08.06/db1p" (empty otherwise). Lets Apple TV switch the TV to the right mode first.
+void reel_codecs(const ReelMedia *media, char *codecs, int codecsSize, char *supplemental, int supplementalSize);
 void reel_error_text(int error, char *buffer, int size);
 
 #ifdef __cplusplus

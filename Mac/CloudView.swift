@@ -6,6 +6,15 @@ struct CloudView: View {
     @ObservedObject var server: ServerManager
     @ObservedObject var cloud: CloudStore
 
+    /// Shows with two or more episodes ready, so a whole season can be approved with one press.
+    private var readyShows: [(show: String, episodes: [PendingFilm])] {
+        let ready = cloud.pending.filter { $0.state == .ready && $0.show != nil }
+        return Dictionary(grouping: ready) { $0.show ?? "" }
+            .filter { $0.value.count > 1 }
+            .map { ($0.key, $0.value.sorted { $0.name < $1.name }) }
+            .sorted { $0.show < $1.show }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -25,14 +34,24 @@ struct CloudView: View {
                 }
                 if cloud.connected { SpeedBox(cloud: cloud) }
                 PhoneBox(phone: server.phone)
-                DropFolderBox(folder: cloud.paths.drop)
+                DropFolderBox(folder: cloud.paths.drop, shows: cloud.paths.shows)
                 if !cloud.pending.isEmpty {
                     Text("Waiting for Your OK").font(.title2.weight(.semibold))
+                    ForEach(readyShows, id: \.show) { group in
+                        ApproveShowRow(cloud: cloud, show: group.show, episodes: group.episodes)
+                    }
                     ForEach(cloud.pending) { PendingRow(cloud: cloud, item: $0) }
                 }
-                if !cloud.films.isEmpty {
+                TorrentList(torrents: server.torrents)
+                let films = cloud.films.filter { !$0.isEpisode }
+                let episodes = cloud.films.filter(\.isEpisode).sorted { ($0.folder, $0.name) < ($1.folder, $1.name) }
+                if !films.isEmpty {
                     Text("Films").font(.title2.weight(.semibold))
-                    ForEach(cloud.films) { FilmRow(cloud: cloud, film: $0) }
+                    ForEach(films) { FilmRow(cloud: cloud, film: $0) }
+                }
+                if !episodes.isEmpty {
+                    Text("TV Shows").font(.title2.weight(.semibold))
+                    ForEach(episodes) { FilmRow(cloud: cloud, film: $0) }
                 }
             }
             .padding(28)
@@ -102,15 +121,19 @@ private struct SpeedBox: View {
 
 private struct DropFolderBox: View {
     let folder: URL
+    let shows: URL
 
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
-                Label("Drop Folder", systemImage: "tray.and.arrow.down").font(.headline)
-                Text("Put films in \((folder.path as NSString).abbreviatingWithTildeInPath). Nothing happens to one until you approve it here. Then it appears on your Apple TV, and Reel uploads it to Google Drive, checks Google’s copy against the original and permanently deletes the original from this Mac. Don’t use this folder as a download app’s save location. Put home videos in a “Home Videos” folder inside it.")
+                Label("Drop Folders", systemImage: "tray.and.arrow.down").font(.headline)
+                Text("Put films in \((folder.path as NSString).abbreviatingWithTildeInPath) and TV shows in \((shows.path as NSString).abbreviatingWithTildeInPath), one folder per show (seasons inside are fine). Nothing happens to one until you approve it here. Then it appears on your Apple TV, and Reel uploads it to Google Drive, checks Google’s copy against the original and permanently deletes the original from this Mac. Don’t use these folders as a download app’s save location.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Open Drop Folder") { NSWorkspace.shared.open(folder) }
+                HStack {
+                    Button("Open Films Folder") { NSWorkspace.shared.open(folder) }
+                    Button("Open TV Shows Folder") { NSWorkspace.shared.open(shows) }
+                }
             }
             .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -256,6 +279,10 @@ private struct PendingRow: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.name).lineLimit(1).truncationMode(.middle)
+                if let show = item.show {
+                    Text(item.season == 0 ? "\(show) · Specials" : "\(show) · Season \(item.season ?? 1)")
+                        .font(.caption.weight(.medium))
+                }
                 if item.size > 0 {
                     Text(item.size.formatted(.byteCount(style: .file))).font(.caption).foregroundStyle(.secondary)
                 }
@@ -321,6 +348,9 @@ private struct FilmRow: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 Text(film.name).lineLimit(1).truncationMode(.middle)
+                if let show = film.show {
+                    Text("\(show) · \(film.folder.split(separator: "/").last.map(String.init) ?? "")").font(.caption.weight(.medium))
+                }
                 Text(line(status)).font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 if let progress = status.progress { ProgressView(value: progress).controlSize(.small) }
                 if let error = status.error {
@@ -358,5 +388,37 @@ private struct FilmRow: View {
         case .downloading: return "arrow.down.circle"
         case .downloaded: return "internaldrive.fill"
         }
+    }
+}
+
+/// One press for every ready episode of a show. Each still passes the same checks as a single approval.
+private struct ApproveShowRow: View {
+    @ObservedObject var cloud: CloudStore
+    let show: String
+    let episodes: [PendingFilm]
+    @State private var error: String?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "tv").font(.title2).foregroundStyle(.secondary).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(show).font(.headline)
+                Text("\(episodes.count) episodes are ready, \(episodes.reduce(0) { $0 + $1.size }.formatted(.byteCount(style: .file))).")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let error { Text(error).font(.caption).foregroundStyle(.red) }
+            }
+            Spacer()
+            Button("Upload All \(episodes.count), Then Delete Originals") {
+                var failed = 0
+                for item in episodes {
+                    do { try cloud.approve(item) } catch { failed += 1 }
+                }
+                error = failed > 0 ? "\(failed) changed or didn’t pass Reel’s checks, so they weren’t uploaded." : nil
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }

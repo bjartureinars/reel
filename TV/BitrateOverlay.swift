@@ -27,14 +27,14 @@ final class BitrateMonitor: ObservableObject {
     private var task: Task<Void, Never>?
     private var arrivals: [(bytes: Int64, seconds: Double)] = []
 
-    func start(player: AVPlayer, item: Item, client: JellyfinClient, source: String, direct: Bool) {
+    func start(player: AVPlayer, item: Item, client: JellyfinClient, source: String, direct: Bool, dolbyVision: Bool = false) {
         stop()
         visible = Self.isPreferred
         self.source = source
         now = nil; average = nil; peak = nil; network = nil; buffer = nil
         stalls = 0
         converting = false
-        picture = direct ? Self.originalDescription(item) : "Checking…"
+        picture = direct ? Self.originalDescription(item, dolbyVision: dolbyVision) : "Checking…"
         bitrates = []
         arrivals = []
         task = Task { [weak self, weak player] in
@@ -107,14 +107,14 @@ final class BitrateMonitor: ObservableObject {
             : "Converted to \(info.videoCodec?.uppercased() ?? "another format")"
     }
 
-    private static func originalDescription(_ item: Item) -> String {
+    private static func originalDescription(_ item: Item, dolbyVision: Bool = false) -> String {
         guard let video = item.videoStream else { return "Original" }
         var parts = ["Original"]
         if let width = video.width { parts.append(width >= 3200 ? "4K" : width >= 1900 ? "1080p" : "\(width) wide") }
         if let codec = video.codec { parts.append(codec.uppercased()) }
         switch video.videoRangeType ?? "" {
-        // Profile 7 remuxes play as their HDR10 base layer.
-        case "DOVIWithEL", "DOVIWithELHDR10Plus": parts.append("HDR10")
+        // Profile 7 plays as Dolby Vision 8.1 through Reel's engine, or as its HDR10 base layer through Jellyfin.
+        case "DOVIWithEL", "DOVIWithELHDR10Plus": parts.append(dolbyVision ? "Dolby Vision 8.1" : "HDR10")
         case let range where range.hasPrefix("DOVI"): parts.append("Dolby Vision")
         case "SDR", "Unknown", "": break
         case let range: parts.append(range)

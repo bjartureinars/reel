@@ -24,8 +24,24 @@ struct Film: Identifiable, Hashable, Codable {
 
     var remote: RemoteFile { RemoteFile(pieces: pieces.map { .init(id: $0.id, offset: $0.offset, size: $0.size) }) }
     var isHomeVideo: Bool { folder == "Home Videos" }
+    var episode: EpisodeRef? { info?.episode }
+    var isEpisode: Bool { episode != nil }
+    /// Another version of a film, or bonus material: reached from the film's page, not listed on its own.
+    var isListedElsewhere: Bool { info?.extra != nil || info?.filmVersion.map { !$0.isDefault } == true }
+    /// The film this one's versions and extras hang off (its default version).
+    var groupID: String { info?.filmVersion?.rootID ?? info?.extra?.rootID ?? id }
+
+    /// "S1 E3", for an episode.
+    var episodeLabel: String? { episode.map { "S\($0.season) E\($0.number)" } }
+
+    /// The name to show where the film or episode stands alone: "Friends · S1 E1 · Pilot".
+    var fullTitle: String {
+        guard let episode, let label = episodeLabel else { return title }
+        return "\(episode.show) · \(label) · \(title)"
+    }
 
     var title: String {
+        if let title = info?.extra?.title { return title }
         if let title = info?.title { return title }
         let base = (fileName as NSString).deletingPathExtension
         return base.replacingOccurrences(of: #"[._]"#, with: " ", options: .regularExpression)
@@ -61,8 +77,58 @@ struct Film: Identifiable, Hashable, Codable {
         quality == .original ? size : quality.estimatedSize(seconds: seconds ?? 7200, hdr: isHDR, uhd: isUHD)
     }
 
-    var posterURL: URL { Folders.artwork.appendingPathComponent("\(id)-poster.jpg") }
+    /// An episode uses its show's poster; its own picture is a still, in `backdropURL`.
+    var posterURL: URL {
+        if let episode { return Show.posterURL(episode.showID) }
+        return Folders.artwork.appendingPathComponent("\(id)-poster.jpg")
+    }
     var backdropURL: URL { Folders.artwork.appendingPathComponent("\(id)-backdrop.jpg") }
+}
+
+/// A TV show's details, without its pictures (those are files on the phone).
+struct ShowDetails: Codable, Equatable {
+    let showID: String
+    let title: String
+    let sortTitle: String?
+    let year: Int?
+    let rating: String?
+    let overview: String?
+    let genres: [String]
+    let people: [FilmInfo.Person]
+    let studio: String?
+
+    init(_ info: ShowInfo) {
+        showID = info.showID; title = info.title; sortTitle = info.sortTitle; year = info.year; rating = info.rating
+        overview = info.overview; genres = info.genres; people = info.people; studio = info.studio
+    }
+}
+
+/// A TV show with the episodes of it that are in Drive.
+struct Show: Identifiable, Hashable {
+    let id: String
+    let details: ShowDetails?
+    /// In order: season, then episode.
+    let episodes: [Film]
+
+    static func == (a: Show, b: Show) -> Bool { a.id == b.id && a.details == b.details && a.episodes == b.episodes }
+    func hash(into h: inout Hasher) { h.combine(id) }
+
+    var title: String { details?.title ?? episodes.first?.episode?.show ?? "TV Show" }
+    var sortTitle: String { details?.sortTitle ?? title }
+    var seasons: [Int] { Array(Set(episodes.compactMap { $0.episode?.season })).sorted() }
+    func episodes(in season: Int) -> [Film] { episodes.filter { $0.episode?.season == season } }
+    var addedAt: Date { episodes.map(\.addedAt).max() ?? .distantPast }
+
+    var metaLine: String {
+        let seasons = seasons.count
+        return [details?.year.map(String.init), details?.rating, seasons == 1 ? "1 Season" : "\(seasons) Seasons"]
+            .compactMap { $0 }.joined(separator: " · ")
+    }
+
+    static func posterURL(_ id: String) -> URL { Folders.artwork.appendingPathComponent("show-\(id)-poster.jpg") }
+    static func backdropURL(_ id: String) -> URL { Folders.artwork.appendingPathComponent("show-\(id)-backdrop.jpg") }
+    var posterURL: URL { Self.posterURL(id) }
+    var backdropURL: URL { Self.backdropURL(id) }
 }
 
 /// A smaller copy in Drive, or the phone's request for one.
@@ -86,6 +152,7 @@ struct CopyRequest: Hashable {
 @MainActor
 final class Library: ObservableObject {
     @Published private(set) var films: [Film] = Store.load("films.json") ?? []
+    @Published private(set) var showDetails: [String: ShowDetails] = Store.load("shows.json") ?? [:]
     @Published private(set) var copies: [String: [CopyQuality: CopyFile]] = Store.load("copies.json") ?? [:]
     @Published private(set) var requests: [String: [CopyQuality: CopyRequest]] = [:]
     @Published private(set) var watching: [String: WatchState] = [:]
@@ -106,8 +173,62 @@ final class Library: ObservableObject {
 
     func film(_ id: String) -> Film? { films.first { $0.id == id } }
 
-    var movies: [Film] { films.filter { !$0.isHomeVideo } }
-    var homeVideos: [Film] { films.filter(\.isHomeVideo) }
+    var movies: [Film] { films.filter { !$0.isHomeVideo && !$0.isEpisode && !$0.isListedElsewhere } }
+
+    /// The default version first, then the others by name. Empty for a film with one version.
+    func versions(of film: Film) -> [Film] {
+        let group = films.filter { $0.info?.filmVersion?.rootID == film.groupID }
+        guard group.count > 1 else { return [] }
+        return group.sorted {
+            let a = $0.info?.filmVersion, b = $1.info?.filmVersion
+            return a?.isDefault != b?.isDefault ? a?.isDefault == true
+                : (a?.label ?? "").localizedStandardCompare(b?.label ?? "") == .orderedAscending
+        }
+    }
+
+    func extras(of film: Film) -> [Film] {
+        films.filter { $0.info?.extra?.rootID == film.groupID }
+            .sorted { ($0.info?.extra?.kind ?? .other, $0.title) < ($1.info?.extra?.kind ?? .other, $1.title) }
+    }
+
+    /// Every show with an episode in Drive, newest first.
+    var shows: [Show] {
+        Dictionary(grouping: films.filter(\.isEpisode)) { $0.episode?.showID ?? "" }
+            .map { id, episodes in
+                Show(id: id, details: showDetails[id], episodes: episodes.sorted {
+                    ($0.episode?.season ?? 0, $0.episode?.number ?? 0) < ($1.episode?.season ?? 0, $1.episode?.number ?? 0)
+                })
+            }
+            .sorted { $0.addedAt > $1.addedAt }
+    }
+
+    func show(_ id: String) -> Show? { shows.first { $0.id == id } }
+
+    /// What to play next: the episode you're in the middle of, else the one after the last you finished,
+    /// else the first.
+    func nextEpisode(of show: Show) -> Film? {
+        if let started = show.episodes.filter({ resumeSeconds($0) > 0 }).max(by: { state($0).updated < state($1).updated }) {
+            return started
+        }
+        if let last = show.episodes.lastIndex(where: { state($0).watched }) {
+            return show.episodes.indices.contains(last + 1) ? show.episodes[last + 1] : nil
+        }
+        return show.episodes.first
+    }
+
+    /// The episode after this one, in the same show.
+    func episode(after film: Film) -> Film? {
+        guard let id = film.episode?.showID, let show = show(id),
+              let index = show.episodes.firstIndex(where: { $0.id == film.id }), index + 1 < show.episodes.count else { return nil }
+        return show.episodes[index + 1]
+    }
+
+    /// The next episode of each show you've watched some of, apart from ones in Continue Watching.
+    var nextUp: [Film] {
+        shows.filter { $0.episodes.contains { state($0).watched } }
+            .compactMap { nextEpisode(of: $0) }
+            .filter { resumeSeconds($0) == 0 && !state($0).watched }
+    }
 
     // MARK: Refreshing
 
@@ -159,26 +280,45 @@ final class Library: ObservableObject {
             let id = found[index].id
             guard let file = infos[id] else { continue }
             let revision = file.appProperties?["rev"] ?? file.md5Checksum ?? ""
-            if let previous = old[id]?.info, UserDefaults.standard.string(forKey: "info.rev.\(id)") == revision {
+            if let previous = old[id]?.info, UserDefaults.standard.string(forKey: Self.revisionKey(id)) == revision {
                 found[index].info = previous
                 continue
             }
             if let data = try? await drive.contents(file.id), var info = try? JSONDecoder().decode(FilmInfo.self, from: data) {
                 if let poster = info.poster { try? poster.write(to: found[index].posterURL, options: .atomic) }
                 if let backdrop = info.backdrop { try? backdrop.write(to: found[index].backdropURL, options: .atomic) }
-                info = FilmInfo(filmID: info.filmID, title: info.title, sortTitle: info.sortTitle, year: info.year,
-                                rating: info.rating, seconds: info.seconds, overview: info.overview, tagline: info.tagline,
-                                genres: info.genres, score: info.score, people: info.people, studio: info.studio,
-                                hdr: info.hdr, width: info.width, sound: info.sound, languages: info.languages,
-                                poster: nil, backdrop: nil)
+                // Everything else is kept as it came, so fields added later (like an episode's show) survive.
+                info.poster = nil
+                info.backdrop = nil
                 found[index].info = info
-                UserDefaults.standard.set(revision, forKey: "info.rev.\(id)")
+                UserDefaults.standard.set(revision, forKey: Self.revisionKey(id))
             } else {
                 found[index].info = old[id]?.info
             }
         }
         films = found.sorted { $0.addedAt > $1.addedAt }
         Store.save(films, as: "films.json")
+
+        // Shows' details and pictures, rewritten only when Reel Server changes them.
+        var newShows: [String: ShowDetails] = [:]
+        for file in byKind[PhoneDrive.show] ?? [] {
+            guard let id = file.appProperties?["id"] else { continue }
+            let revision = file.appProperties?["rev"] ?? file.md5Checksum ?? ""
+            if let previous = showDetails[id], UserDefaults.standard.string(forKey: "show.rev.\(id)") == revision {
+                newShows[id] = previous
+                continue
+            }
+            if let data = try? await drive.contents(file.id), let info = try? JSONDecoder().decode(ShowInfo.self, from: data) {
+                if let poster = info.poster { try? poster.write(to: Show.posterURL(id), options: .atomic) }
+                if let backdrop = info.backdrop { try? backdrop.write(to: Show.backdropURL(id), options: .atomic) }
+                newShows[id] = ShowDetails(info)
+                UserDefaults.standard.set(revision, forKey: "show.rev.\(id)")
+            } else {
+                newShows[id] = showDetails[id]
+            }
+        }
+        showDetails = newShows
+        Store.save(showDetails, as: "shows.json")
 
         var newCopies: [String: [CopyQuality: CopyFile]] = [:]
         for file in byKind[PhoneDrive.copy] ?? [] {
@@ -206,6 +346,9 @@ final class Library: ObservableObject {
         }
         saveWatching()
     }
+
+    /// "2": details saved before episodes kept their show are read again once.
+    private static func revisionKey(_ id: String) -> String { "info.rev2.\(id)" }
 
     private static func added(_ file: DriveFile) -> Date {
         if let text = file.appProperties?["modified"], let seconds = Double(text) { return Date(timeIntervalSince1970: seconds) }
@@ -321,8 +464,58 @@ final class Library: ObservableObject {
         let words = text.lowercased().split(separator: " ")
         guard !words.isEmpty else { return [] }
         return films.filter { film in
+            guard !film.isEpisode, !film.isListedElsewhere else { return false }   // shows are found by searchShows
             let haystack = ([film.title, film.info?.overview ?? "", film.info?.studio ?? "", film.info?.year.map(String.init) ?? ""]
                 + (film.info?.genres ?? []) + (film.info?.people.map(\.name) ?? [])).joined(separator: " ").lowercased()
+            return words.allSatisfy { haystack.contains($0) }
+        }
+    }
+
+    /// Films that share the most genres with this one, then the nearest in year.
+    func similar(to film: Film, limit: Int = 12) -> [Film] {
+        let genres = Set(film.info?.genres ?? [])
+        guard !genres.isEmpty else { return [] }
+        let year = film.info?.year ?? 0
+        struct Scored { let film: Film; let shared: Int; let distance: Int }
+        var scored: [Scored] = []
+        for other in movies where other.id != film.id {
+            let shared = Set(other.info?.genres ?? []).intersection(genres).count
+            if shared > 0 { scored.append(Scored(film: other, shared: shared, distance: abs((other.info?.year ?? 0) - year))) }
+        }
+        scored.sort { $0.shared != $1.shared ? $0.shared > $1.shared : $0.distance < $1.distance }
+        return scored.prefix(limit).map(\.film)
+    }
+
+    func similar(to show: Show, limit: Int = 12) -> [Show] {
+        let genres = Set(show.details?.genres ?? [])
+        guard !genres.isEmpty else { return [] }
+        return shows.filter { $0.id != show.id }
+            .map { ($0, Set($0.details?.genres ?? []).intersection(genres).count) }
+            .filter { $0.1 > 0 }
+            .sorted { $0.1 > $1.1 }
+            .prefix(limit).map(\.0)
+    }
+
+    /// Home's genre rows: the genres with enough films to fill a row, biggest first.
+    var genreRows: [(genre: String, films: [Film])] {
+        var byGenre: [String: [Film]] = [:]
+        for film in movies {
+            for genre in film.info?.genres ?? [] { byGenre[genre, default: []].append(film) }
+        }
+        var rows: [(genre: String, films: [Film])] = []
+        for (genre, films) in byGenre where films.count >= 3 {
+            rows.append((genre: genre, films: films.sorted { $0.addedAt > $1.addedAt }))
+        }
+        rows.sort { $0.films.count != $1.films.count ? $0.films.count > $1.films.count : $0.genre < $1.genre }
+        return Array(rows.prefix(4))
+    }
+
+    func searchShows(_ text: String) -> [Show] {
+        let words = text.lowercased().split(separator: " ")
+        guard !words.isEmpty else { return [] }
+        return shows.filter { show in
+            let haystack = ([show.title, show.details?.overview ?? "", show.details?.studio ?? ""]
+                + (show.details?.genres ?? []) + (show.details?.people.map(\.name) ?? [])).joined(separator: " ").lowercased()
             return words.allSatisfy { haystack.contains($0) }
         }
     }

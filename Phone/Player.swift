@@ -14,7 +14,7 @@ enum PlaySource: Equatable {
     var label: String {
         switch self {
         case .stream: return "Streaming from Google Drive"
-        case .download(let quality): return quality == .original ? "On this iPhone" : "On this iPhone, \(quality.title)"
+        case .download(let quality): return quality == .original ? "On this \(Device.name)" : "On this \(Device.name), \(quality.title)"
         }
     }
 }
@@ -39,6 +39,8 @@ final class PlayerModel: ObservableObject {
     @Published private(set) var stats = PanelStats()
     @Published var problem: String?
     @Published var isPresented = false
+    /// Playback speed, for this film. 1 is normal.
+    @Published private(set) var speed: Float = 1
 
     struct PanelStats: Equatable {
         var filmMegabits: Double = 0
@@ -66,6 +68,7 @@ final class PlayerModel: ObservableObject {
         self.film = film
         self.source = source
         self.library = library
+        speed = 1
         duration = film.seconds ?? 0
         time = seconds
         preparing = true
@@ -159,6 +162,7 @@ final class PlayerModel: ObservableObject {
         item.preferredForwardBufferDuration = 40
         item.externalMetadata = metadata()
         let player = self.player ?? AVPlayer()
+        player.defaultRate = speed   // play() uses it, so the speed survives pausing
         player.allowsExternalPlayback = false
         player.automaticallyWaitsToMinimizeStalling = true
         player.replaceCurrentItem(with: item)
@@ -218,7 +222,12 @@ final class PlayerModel: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self, (note.object as? AVPlayerItem) === self.player?.currentItem else { return }
                 self.save(push: true, finished: true)
-                self.isPresented = false
+                // A show carries on with its next episode; anything else closes.
+                if let next = self.nextEpisode {
+                    AppModel.shared.play(next, from: 0)
+                } else {
+                    self.isPresented = false
+                }
             }
         }
         notifications.append(end)
@@ -252,6 +261,22 @@ final class PlayerModel: ObservableObject {
     }
 
     // MARK: Controls
+
+    /// The episode after this one, if this is an episode and there is one.
+    var nextEpisode: Film? { film.flatMap { library?.episode(after: $0) } }
+
+    func playNext() {
+        guard let next = nextEpisode else { return }
+        save(push: true, finished: true)
+        AppModel.shared.play(next, from: 0)
+    }
+
+    func setSpeed(_ value: Float) {
+        speed = value
+        player?.defaultRate = value
+        if let player, player.timeControlStatus != .paused { player.rate = value }
+        updateNowPlaying()
+    }
 
     func togglePlay() {
         guard let player else { return }
@@ -331,7 +356,7 @@ final class PlayerModel: ObservableObject {
             m.extendedLanguageTag = "und"
             return m
         }
-        var out = [item(.commonIdentifierTitle, film.title as NSString)]
+        var out = [item(.commonIdentifierTitle, film.fullTitle as NSString)]
         if let overview = film.info?.overview { out.append(item(.commonIdentifierDescription, overview as NSString)) }
         if let data = try? Data(contentsOf: film.posterURL) { out.append(item(.commonIdentifierArtwork, data as NSData)) }
         return out
@@ -340,7 +365,7 @@ final class PlayerModel: ObservableObject {
     private func updateNowPlaying() {
         guard let film else { return }
         var info: [String: Any] = [
-            MPMediaItemPropertyTitle: film.title,
+            MPMediaItemPropertyTitle: film.fullTitle,
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: time,
             MPNowPlayingInfoPropertyPlaybackRate: playing ? 1.0 : 0.0,
@@ -376,7 +401,8 @@ final class PlayerModel: ObservableObject {
         var parts = [source.label]
         if let video {
             let size = video.width >= 3200 ? "4K" : video.height >= 1000 ? "1080p" : "\(video.height)p"
-            let range = video.range == ReelRangePQ ? " HDR10" : video.range == ReelRangeHLG ? " HLG" : ""
+            let range = video.dolbyVision == 8 ? " Dolby Vision 8.1" : video.dolbyVision == 5 ? " Dolby Vision"
+                : video.range == ReelRangePQ ? " HDR10" : video.range == ReelRangeHLG ? " HLG" : ""
             parts.append("Original picture, \(size) \(video.codec == "hevc" ? "HEVC" : "H.264")\(range)")
         }
         if let sound {

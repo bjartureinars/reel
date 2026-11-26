@@ -18,6 +18,10 @@ struct PendingFilm: Identifiable, Equatable {
     var state: State
 
     var id: String { path }
+
+    /// "Friends" for an episode in "TV Shows/Friends/Season 01", nil for a film.
+    var show: String? { CloudFilm.show(inFolder: folder) }
+    var season: Int? { CloudFilm.season(inFolder: folder) }
 }
 
 /// Works out what in the drop folder is a film, and whether it looks finished. Only ever reads.
@@ -30,7 +34,8 @@ enum DropInspector {
     private static let unfinishedSuffixes =
         [".part", ".!ut", ".!qb", ".!bt", ".aria2", ".crdownload", ".download", ".reelpart"]
 
-    static func scan(_ root: URL) -> [PendingFilm] {
+    /// `shows`: the TV shows drop folder, where each episode goes under its show and season.
+    static func scan(_ root: URL, shows: Bool = false) -> [PendingFilm] {
         guard let names = FileManager.default.enumerator(atPath: root.path) else { return [] }
         var files: [String] = []
         var discs = Set<String>()
@@ -45,8 +50,7 @@ enum DropInspector {
             }
             if unfinishedSuffixes.contains(where: { base.lowercased().hasSuffix($0) }) { unfinished.append(relative) }
             let parts = relative.split(separator: "/").map(String.init)
-            // Under Home Videos, BDMV is how camcorders store separate recordings, so it isn't one film.
-            if folder(of: relative) == "Films", let index = parts.firstIndex(where: { $0.lowercased() == "bdmv" }),
+            if !shows, let index = parts.firstIndex(where: { $0.lowercased() == "bdmv" }),
                isFolder || index < parts.count - 1 {
                 discs.insert(parts[..<index].joined(separator: "/"))
                 continue
@@ -63,7 +67,7 @@ enum DropInspector {
             let path = root.appendingPathComponent(relative).path
             guard let stamp = FileStamp(path: path) else { continue } // symlinks are never followed
             let name = (relative as NSString).lastPathComponent
-            let home = folder(of: relative)
+            let home = shows ? showFolder(of: relative) : folder(of: relative)
             var problem: String?
             if home == "Films", name.range(of: #"^\d{5}( \(\d+\))?\.(m2ts|mts)$"#,
                                            options: [.regularExpression, .caseInsensitive]) != nil {
@@ -84,8 +88,41 @@ enum DropInspector {
     }
 
     private static func folder(of relative: String) -> String {
-        let first = relative.split(separator: "/").first.map(String.init) ?? ""
-        return first.caseInsensitiveCompare("Home Videos") == .orderedSame ? "Home Videos" : "Films"
+        // Films, whatever subfolder something is dropped into. Shows have their own drop folder.
+        "Films"
+    }
+
+    /// "TV Shows/Friends/Season 01". The show is the first folder (or, for a loose file, the name before its
+    /// episode number); the season comes from the episode number (S01E02, 1x02), else from a "Season 1" folder.
+    static func showFolder(of relative: String) -> String {
+        let parts = relative.split(separator: "/").map(String.init)
+        let file = (parts.last.map { ($0 as NSString).deletingPathExtension }) ?? ""
+        var season: Int?
+        for pattern in [#"[Ss](\d{1,3})[ ._-]?[Ee]\d{1,4}"#, #"(?<![0-9])(\d{1,2})x\d{2,3}(?![0-9])"#] {
+            if let match = file.range(of: pattern, options: .regularExpression) {
+                season = Int(file[match].drop { !$0.isNumber }.prefix { $0.isNumber })
+                break
+            }
+        }
+        if season == nil {
+            for folder in parts.dropLast().reversed() {
+                if let match = folder.range(of: #"(?i)(season|series|s)[ ._-]*(\d{1,3})\b"#, options: .regularExpression) {
+                    season = Int(folder[match].reversed().drop { !$0.isNumber }.prefix { $0.isNumber }.reversed().map(String.init).joined())
+                    break
+                }
+                if folder.range(of: #"(?i)^(specials|extras)$"#, options: .regularExpression) != nil { season = 0; break }
+            }
+        }
+        var show = parts.count > 1 ? parts[0] : ""
+        if show.isEmpty {
+            // A loose file: "Friends.S01E01.The.One…" belongs to "Friends".
+            let before = file.range(of: #"[ ._-]*([Ss]\d{1,3}[ ._-]?[Ee]\d|\d{1,2}x\d{2})"#, options: .regularExpression)
+                .map { String(file[..<$0.lowerBound]) } ?? file
+            show = before.replacingOccurrences(of: ".", with: " ").replacingOccurrences(of: "_", with: " ")
+        }
+        show = show.trimmingCharacters(in: .whitespaces)
+        if show.isEmpty { show = "Unknown Show" }
+        return "TV Shows/\(show)/Season \(String(format: "%02d", season ?? 1))"
     }
 
     private static func emptyOrSparse(_ path: String, size: Int64) -> String? {

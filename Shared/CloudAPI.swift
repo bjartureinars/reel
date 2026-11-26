@@ -22,6 +22,11 @@ struct FilmStatus: Codable, Equatable {
     let megabitsPerSecond: Double?
     let secondsLeft: Double?
     let error: String?
+    /// For a film with several versions: this one's name ("4K", "Blu-ray") and whether Play uses it.
+    var versionLabel: String? = nil
+    var isDefaultVersion: Bool? = nil
+    /// For an extra: the title chosen in Reel Server (Jellyfin trims words like "Trailer" from its own).
+    var extraTitle: String? = nil
 }
 
 /// Where a play should read from.

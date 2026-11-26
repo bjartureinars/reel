@@ -16,6 +16,8 @@ struct Track: Identifiable, Hashable {
     let untouched: Bool
     let lossless: Bool
     let range: ReelRange
+    /// Dolby Vision profile as it plays: 8 for 8.1 (a UHD Blu-ray's profile 7 is converted), 5, or 0.
+    let dolbyVision: Int
     let width: Int
     let height: Int
     let channels: Int
@@ -124,7 +126,7 @@ final class EngineMedia {
             found.append(Track(id: Int(s.index), kind: s.kind, name: name, detail: detail, language: language,
                                isDefault: s.isDefault, isForced: s.isForced, isCommentary: s.isCommentary,
                                playable: s.playable, untouched: s.untouched, lossless: s.lossless, range: s.range,
-                               width: Int(s.width), height: Int(s.height), channels: Int(s.channels), codec: codec,
+                               dolbyVision: Int(s.dolbyVision), width: Int(s.width), height: Int(s.height), channels: Int(s.channels), codec: codec,
                                frameRate: s.frameRate))
         }
         tracks = found
@@ -173,6 +175,13 @@ final class EngineMedia {
         }
         let result = reel_select(pointer, Int32(sound ?? -1), Int32(subtitles ?? -1), handler, context)
         if result < 0 { throw EngineError(code: result) }
+    }
+
+    /// HLS names for what plays, after `select`: codecs, and the Dolby Vision kind (empty if none).
+    var codecs: (codecs: String, supplemental: String) {
+        var codecs = [CChar](repeating: 0, count: 128), supplemental = [CChar](repeating: 0, count: 64)
+        reel_codecs(pointer, &codecs, Int32(codecs.count), &supplemental, Int32(supplemental.count))
+        return (String(cString: codecs), String(cString: supplemental))
     }
 
     var segmentCount: Int { Int(reel_segment_count(pointer)) }
@@ -242,7 +251,7 @@ struct EngineError: LocalizedError {
         let text = String(cString: buffer)
         switch text {
         case _ where text.contains("Stream not found"):
-            return "This film’s picture is in a format iPhone can’t play without converting it. Download a Medium or Low copy instead."
+            return "This film’s picture is in a format \(Device.name) can’t play without converting it. Download a Medium or Low copy instead."
         case _ where text.contains("Input/output"):
             return "Reel couldn’t read the film from Google Drive. Check your connection and try again."
         default:
@@ -276,6 +285,7 @@ final class StreamServer: @unchecked Sendable {
     private var prefetching = false
     private var stopped = false
     private var statsValue = Stats()
+    private var description: (codecs: String, supplemental: String) = ("", "")
     var onError: (Error) -> Void = { _ in }
 
     init(media: EngineMedia) {
@@ -323,16 +333,20 @@ final class StreamServer: @unchecked Sendable {
     }
 
     /// A new choice of sound or subtitles gets a new address, so AVPlayer can't mix old segments in.
-    func select(sound: Int?, subtitles: Int?, from seconds: Double) throws -> URL {
+    /// With `master`, the address is of a playlist that also says what kind of picture it is, which Apple TV
+    /// needs to switch the TV to Dolby Vision or HDR before playing.
+    func select(sound: Int?, subtitles: Int?, from seconds: Double, master: Bool = false) throws -> URL {
         var begin = 0, elapsed = 0.0
         for index in 0..<media.segmentCount {
             if elapsed + media.segmentDuration(index) > seconds { begin = index; break }
             elapsed += media.segmentDuration(index)
         }
-        try queue.sync {
+        let described = try queue.sync {
             try media.select(sound: sound, subtitles: subtitles)
+            return media.codecs
         }
         lock.lock()
+        description = described
         version += 1
         startSegment = begin
         initData = nil
@@ -340,7 +354,27 @@ final class StreamServer: @unchecked Sendable {
         order = []
         let current = version
         lock.unlock()
-        return URL(string: "http://127.0.0.1:\(port)/\(token)/\(current)/film.m3u8")!
+        return URL(string: "http://127.0.0.1:\(port)/\(token)/\(current)/\(master ? "master" : "film").m3u8")!
+    }
+
+    private var masterPlaylist: String {
+        lock.lock()
+        let (codecs, supplemental) = description
+        lock.unlock()
+        var attributes = [String]()
+        // The film's average rate, and room above it for its busiest scenes.
+        let average = media.duration > 0 ? Double(media.reader.size) * 8 / media.duration : 40_000_000
+        attributes.append("BANDWIDTH=\(Int(min(average * 2.5, 250_000_000)))")
+        attributes.append("AVERAGE-BANDWIDTH=\(Int(average))")
+        attributes.append("CODECS=\"\(codecs)\"")
+        if !supplemental.isEmpty { attributes.append("SUPPLEMENTAL-CODECS=\"\(supplemental)\"") }
+        if let video = media.video {
+            if video.width > 0 { attributes.append("RESOLUTION=\(video.width)x\(video.height)") }
+            if video.frameRate > 0 { attributes.append(String(format: "FRAME-RATE=%.3f", video.frameRate)) }
+            attributes.append("VIDEO-RANGE=\(video.range == ReelRangePQ ? "PQ" : video.range == ReelRangeHLG ? "HLG" : "SDR")")
+        }
+        return ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-INDEPENDENT-SEGMENTS",
+                "#EXT-X-STREAM-INF:" + attributes.joined(separator: ","), "film.m3u8"].joined(separator: "\n") + "\n"
     }
 
     private var playlist: String {
@@ -463,7 +497,9 @@ final class StreamServer: @unchecked Sendable {
         let isHead = parts[0] == "HEAD"
         do {
             let file = path[2]
-            if file == "film.m3u8" {
+            if file == "master.m3u8" {
+                send(connection, 200, "application/vnd.apple.mpegurl", Data(masterPlaylist.utf8), head: isHead, then: then)
+            } else if file == "film.m3u8" {
                 send(connection, 200, "application/vnd.apple.mpegurl", Data(playlist.utf8), head: isHead, then: then)
             } else if file == "init.mp4" {
                 send(connection, 200, "video/mp4", try initSegment(version: wanted), head: isHead, range: headers["range"], then: then)

@@ -16,6 +16,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         }
     }
 
+    /// A scene delegate only to hear about Home Screen quick actions.
+    func application(_ application: UIApplication, configurationForConnecting session: UISceneSession,
+                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: nil, sessionRole: session.role)
+        configuration.delegateClass = SceneDelegate.self
+        return configuration
+    }
+
     func application(_ application: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.refreshTask, using: nil) { task in
             Task { @MainActor in
@@ -28,6 +36,27 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         }
         return true
     }
+}
+
+final class SceneDelegate: NSObject, UIWindowSceneDelegate {
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+        guard let item = connectionOptions.shortcutItem else { return }
+        Task { @MainActor in
+            // Opened by a quick action: let the first screen appear before acting on it.
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            AppModel.shared.perform(item)
+        }
+    }
+
+    func windowScene(_ windowScene: UIWindowScene, performActionFor shortcutItem: UIApplicationShortcutItem,
+                     completionHandler: @escaping (Bool) -> Void) {
+        MainActor.assumeIsolated { AppModel.shared.perform(shortcutItem) }
+        completionHandler(true)
+    }
+}
+
+enum AppTab: Hashable {
+    case home, films, shows, downloads, settings, search
 }
 
 /// Everything the screens share.
@@ -43,6 +72,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var online = true
     @Published var cellularPrompt: (film: Film, seconds: Double)?
     @Published var notice: String?
+    @Published var tab: AppTab = .home
     @AppStorage("streamOverCellular") var streamOverCellular = false
     private let monitor = NWPathMonitor()
 
@@ -74,6 +104,45 @@ final class AppModel: ObservableObject {
             return
         }
         player.play(film, from: start, source: .stream, library: library, downloads: downloads)
+    }
+
+    /// Starts a download from a menu or a season; what goes wrong shows as a notice.
+    func download(_ film: Film, quality: CopyQuality = .original) {
+        Task {
+            do { try await downloads.start(film, quality: quality) } catch { notice = error.localizedDescription }
+        }
+    }
+
+    // MARK: Home Screen quick actions
+
+    /// Resume what you were watching, plus Search and Downloads (home-screen-quick-actions.md: high-value tasks).
+    func updateQuickActions() {
+        var items: [UIApplicationShortcutItem] = []
+        if let film = library.continueWatching.first {
+            let left = film.seconds.map { "\(max(0, $0 - library.resumeSeconds(film)).runtimeText) left" }
+            items.append(UIApplicationShortcutItem(type: "resume", localizedTitle: "Resume \(film.episode?.show ?? film.title)",
+                                                   localizedSubtitle: [film.episodeLabel, left].compactMap { $0 }.joined(separator: " · "),
+                                                   icon: UIApplicationShortcutIcon(systemImageName: "play.fill"),
+                                                   userInfo: ["id": film.id as NSString]))
+        }
+        items.append(UIApplicationShortcutItem(type: "search", localizedTitle: "Search", localizedSubtitle: nil,
+                                               icon: UIApplicationShortcutIcon(systemImageName: "magnifyingglass")))
+        items.append(UIApplicationShortcutItem(type: "downloads", localizedTitle: "Downloads", localizedSubtitle: nil,
+                                               icon: UIApplicationShortcutIcon(systemImageName: "arrow.down.circle")))
+        UIApplication.shared.shortcutItems = items
+    }
+
+    func perform(_ item: UIApplicationShortcutItem) {
+        switch item.type {
+        case "resume":
+            if let id = item.userInfo?["id"] as? String, let film = library.film(id) {
+                tab = .home
+                play(film)
+            }
+        case "search": tab = .search
+        case "downloads": tab = .downloads
+        default: break
+        }
     }
 
     func scheduleRefresh() {
@@ -113,6 +182,7 @@ struct ReelPhoneApp: App {
             switch phase {
             case .background:
                 app.player.save(push: true)
+                app.updateQuickActions()
                 app.scheduleRefresh()
                 Task { await app.downloads.topUp() }
             case .active:
@@ -163,26 +233,35 @@ struct RootView: View {
 }
 
 struct MainTabs: View {
+    @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var downloads: DownloadCenter
 
     var body: some View {
-        TabView {
-            Tab("Home", systemImage: "house.fill") {
+        TabView(selection: $app.tab) {
+            Tab("Home", systemImage: "house.fill", value: AppTab.home) {
                 NavigationStack { HomeView() }
             }
-            Tab("Library", systemImage: "film.stack.fill") {
+            Tab("Films", systemImage: "film.stack.fill", value: AppTab.films) {
                 NavigationStack { LibraryView() }
             }
-            Tab("Downloads", systemImage: "arrow.down.circle.fill") {
+            Tab("TV Shows", systemImage: "tv.fill", value: AppTab.shows) {
+                NavigationStack { ShowsView() }
+            }
+            Tab("Downloads", systemImage: "arrow.down.circle.fill", value: AppTab.downloads) {
                 NavigationStack { DownloadsView() }
             }
             .badge(downloads.downloads.values.filter { $0.state != .ready }.count)
-            Tab("Settings", systemImage: "gearshape.fill") {
-                NavigationStack { SettingsView() }
+            // iPhone has room for five tabs without a More tab; its Settings open from Home.
+            if Device.isPad {
+                Tab("Settings", systemImage: "gearshape.fill", value: AppTab.settings) {
+                    NavigationStack { SettingsView() }
+                }
             }
-            Tab(role: .search) {
+            Tab(value: AppTab.search, role: .search) {
                 NavigationStack { SearchView() }
             }
         }
+        // A sidebar on iPad, which can be hidden; the usual tab bar on iPhone.
+        .tabViewStyle(.sidebarAdaptable)
     }
 }

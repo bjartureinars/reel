@@ -98,7 +98,7 @@ final class DownloadCenter: NSObject, ObservableObject {
         guard let library else { return }
         let needed = film.estimatedSize(quality) + 1_000_000_000
         guard Folders.freeSpace > needed else {
-            throw CloudError("\(film.title) needs \(needed.fileSize) free on this iPhone. You have \(Folders.freeSpace.fileSize).")
+            throw CloudError("\(film.fullTitle) needs \(needed.fileSize) free on this \(Device.name). You have \(Folders.freeSpace.fileSize).")
         }
         if let old = downloads[film.id] { remove(old) }
         var download = Download(id: film.id, quality: quality, size: film.estimatedSize(quality), state: .downloading, added: Date())

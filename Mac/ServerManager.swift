@@ -4,11 +4,12 @@ import SwiftUI
 
 enum LibraryKind: String, CaseIterable, Identifiable {
     case films = "Films"
-    case homeVideos = "Home Videos"
+    case shows = "TV Shows"
     var id: String { rawValue }
-    var collectionType: String { self == .films ? "movies" : "homevideos" }
-    var symbol: String { self == .films ? "film" : "video" }
-    var itemTypes: String { self == .films ? "Movie,Video" : "Video,Movie" }
+    var collectionType: String { self == .films ? "movies" : "tvshows" }
+    var symbol: String { self == .films ? "film" : "tv" }
+    /// What the library page lists: films, or whole shows (their episodes are inside).
+    var itemTypes: String { self == .films ? "Movie,Video" : "Series" }
 }
 
 enum AddMode: String, CaseIterable, Identifiable {
@@ -62,6 +63,10 @@ final class ServerManager: ObservableObject {
     private(set) var client: JellyfinClient
     let google: GoogleAuth
     let cloud: CloudStore
+    /// Watch progress to copy to a film once it has moved into its versions-and-extras folder.
+    var pendingWatchStates: [UInt64: UserData] = [:]
+    /// Torrents downloading straight to Google Drive.
+    let torrents: TorrentStore
     @Published private(set) var cloudProblem: String?
     private lazy var controlAPI = ControlAPI(server: self)
     /// Supplies Reel for iPhone through Google Drive.
@@ -111,6 +116,7 @@ final class ServerManager: ObservableObject {
         google = auth
         cloud = CloudStore(
             paths: CloudPaths(drop: home.appendingPathComponent("Reel/movies", isDirectory: true),
+                              shows: home.appendingPathComponent("Reel/tv shows", isDirectory: true),
                               downloads: home.appendingPathComponent("Movies/Reel/Now Playing", isDirectory: true),
                               state: supportDir.appendingPathComponent("cloud", isDirectory: true),
                               mount: supportDir.appendingPathComponent("cloud-disk", isDirectory: true)),
@@ -120,6 +126,7 @@ final class ServerManager: ObservableObject {
                 let probe = supportDir.appendingPathComponent("Jellyfin.app/Contents/MacOS/ffprobe")
                 return FileManager.default.isExecutableFile(atPath: probe.path) ? probe : nil
             })
+        torrents = TorrentStore(cloud: cloud, folder: supportDir.appendingPathComponent("torrents", isDirectory: true))
         lanAddress = Self.currentLANAddress()
         cloud.onFilmsChanged = { [weak self] in
             guard let self, self.state == .running else { return }
@@ -191,9 +198,12 @@ final class ServerManager: ObservableObject {
             publishBonjour()
             startPolling()
             phone.start()
+            torrents.start()
             // The cloud disk's list can change before Jellyfin is up, when onFilmsChanged can't rescan.
             await rescan()
+            await removeVanished()
             await refreshLibraries()
+            await dressExtrasShows()
         } catch let error as ServerSetupError where error == .missing {
             state = .missing
         } catch {
@@ -239,7 +249,7 @@ final class ServerManager: ObservableObject {
               let binary = locate("jellyfin") else { throw ServerSetupError.missing }
         let fm = FileManager.default
         for dir in [dataDir, dataDir.appendingPathComponent("config"), logsDir, cacheDir, libraryRoot,
-                    folder(for: .films), folder(for: .homeVideos)] {
+                    folder(for: .films), folder(for: .shows), cloud.paths.shows] {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
         var args = ["--datadir", dataDir.path,
@@ -370,12 +380,19 @@ final class ServerManager: ObservableObject {
                 .init("paths", path.path), .init("refreshLibrary", "true"),
             ], json: ["LibraryOptions": [
                 "EnableRealtimeMonitor": true,
-                "EnableChapterImageExtraction": kind == .homeVideos,
-                "ExtractChapterImagesDuringLibraryScan": kind == .homeVideos,
+                "EnableChapterImageExtraction": false,
+                "ExtractChapterImagesDuringLibraryScan": false,
                 "PreferredMetadataLanguage": "en",
                 "MetadataCountryCode": "US",
             ] as [String: Any]])
             folders = try await client.get("/Library/VirtualFolders")
+        }
+        // Reel used to have a Home Videos library. It's taken out of Jellyfin only while empty; the folder stays.
+        if let old = folders.first(where: { $0.name == "Home Videos" }), let userId, let parent = old.itemId,
+           let inside = try? await client.items(userId: userId, parentId: parent, types: "Movie,Video"), inside.isEmpty {
+            try? await client.send("DELETE", "/Library/VirtualFolders", query: [.init("name", "Home Videos"),
+                                                                                .init("refreshLibrary", "false")])
+            folders.removeAll { $0.name == "Home Videos" }
         }
         if CloudMount.isMounted(cloud.paths.mount) {
             for kind in LibraryKind.allCases {
@@ -404,17 +421,71 @@ final class ServerManager: ObservableObject {
         }
     }
 
+    /// Jellyfin keeps items whose files have gone when their library folder is empty (it takes that for a
+    /// disconnected drive). Reel's own local folders are always on this Mac, so anything listed there whose file
+    /// is gone really is gone. The Google Drive disk is never pruned this way: Reel's catalog decides what's there.
+    func removeVanished() async {
+        guard let userId else { return }
+        let fm = FileManager.default
+        let locals = LibraryKind.allCases.map { folder(for: $0).path + "/" }
+        guard fm.fileExists(atPath: libraryRoot.path) else { return }
+        func isLocal(_ path: String) -> Bool { locals.contains { path.hasPrefix($0) } }
+        // Nothing at all at the path, not even a link: a link to an unplugged drive is kept.
+        func exists(_ path: String) -> Bool { (try? fm.attributesOfItem(atPath: path)) != nil }
+
+        let page: ItemsPage? = try? await client.get("/Items", [
+            .init("userId", userId), .init("recursive", "true"), .init("includeItemTypes", "Movie,Video,Episode"),
+            .init("fields", "Path"), .init("enableImages", "false"),
+        ])
+        var doomed: [String] = []
+        var shows = Set<String>()
+        for item in page?.items ?? [] {
+            guard let path = item.path, isLocal(path), !exists(path) else { continue }
+            if let show = item.seriesId { shows.insert(show) }
+            doomed.append(item.id)
+        }
+        // A show whose folder has gone goes as a whole, with its seasons.
+        for show in shows {
+            if let series = try? await client.item(show, userId: userId), let path = series.path, isLocal(path), !exists(path) {
+                doomed.append(series.id)
+            }
+        }
+        for id in doomed {
+            try? await client.send("DELETE", "/Items/\(id)")
+        }
+    }
+
     func rescan() async {
         try? await client.send("POST", "/Library/Refresh")
         scanProgress = 0
     }
 
     func posterURL(for item: Item, kind: LibraryKind) -> URL? {
-        kind == .films ? client.imageURL(for: item, maxWidth: 400) : client.backdropURL(for: item, maxWidth: 600)
+        client.imageURL(for: item, maxWidth: 400)
+    }
+
+    /// The episodes of a show, in order.
+    func episodes(of series: Item) async -> [Item] {
+        guard let userId else { return [] }
+        let page: ItemsPage? = try? await client.get("/Shows/\(series.id)/Episodes", [
+            .init("userId", userId), .init("fields", "Path,Overview,MediaStreams,DateCreated"),
+            .init("enableImageTypes", "Primary,Backdrop,Thumb"),
+        ])
+        return page?.items ?? []
+    }
+
+    /// A whole show: every episode goes, as for a film (Drive's Bin, or the Mac's Trash).
+    func removeShow(_ series: Item) async {
+        for episode in await episodes(of: series) { await removeFromLibrary(episode, rescanAfter: false) }
+        await rescan()
     }
 
     /// Moves the file to the Trash (recoverable), then rescans.
     func removeFromLibrary(_ item: Item) async {
+        await removeFromLibrary(item, rescanAfter: true)
+    }
+
+    private func removeFromLibrary(_ item: Item, rescanAfter: Bool) async {
         guard let path = item.path else { return }
         if path.hasPrefix(cloud.paths.mount.path + "/") {
             guard let film = cloud.film(atDiskPath: path) else { return await rescan() }
@@ -433,7 +504,7 @@ final class ServerManager: ObservableObject {
             target = url.deletingLastPathComponent()
         }
         _ = try? await NSWorkspace.shared.recycle([target])
-        await rescan()
+        if rescanAfter { await rescan() }
     }
 
     private func libraryFolderContaining(_ url: URL) -> URL? {
@@ -447,16 +518,15 @@ final class ServerManager: ObservableObject {
     func add(_ urls: [URL], to kind: LibraryKind) {
         // Links stay in the local library; everything else goes through the drop folder to Google Drive.
         let destination: URL
-        switch (addMode, kind) {
-        case (.link, _): destination = folder(for: kind)
-        case (_, .films): destination = cloud.paths.drop
-        case (_, .homeVideos): destination = cloud.paths.drop.appendingPathComponent(kind.rawValue, isDirectory: true)
+        switch addMode {
+        case .link: destination = folder(for: kind)
+        case .move, .copy: destination = kind == .shows ? cloud.paths.shows : cloud.paths.drop
         }
         try? FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         for url in urls {
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { continue }
-            let dropPath = cloud.paths.drop.resolvingSymlinksInPath().path
+            let dropPath = (kind == .shows ? cloud.paths.shows : cloud.paths.drop).resolvingSymlinksInPath().path
             let sourcePath = url.resolvingSymlinksInPath().path
             if addMode != .link, sourcePath.hasPrefix(dropPath + "/") || dropPath.hasPrefix(sourcePath + "/")
                 || sourcePath == dropPath { continue }
@@ -601,7 +671,12 @@ final class ServerManager: ObservableObject {
             let running = scan.state == "Running"
             let wasRunning = scanProgress != nil
             scanProgress = running ? (scan.currentProgressPercentage ?? 0) / 100 : nil
-            if wasRunning && !running { await refreshLibraries() }
+            if wasRunning && !running {
+                await removeVanished()
+                await refreshLibraries()
+                await dressExtrasShows()
+                await applyPendingWatchStates()
+            }
             else if running || refreshLibrary { await refreshLibraries() }
         }
     }

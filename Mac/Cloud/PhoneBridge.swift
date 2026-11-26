@@ -70,9 +70,20 @@ final class PhoneBridge: ObservableObject {
             let lastPlayedDate: String?
         }
 
-        let id: String
-        let name: String?
+        struct Source: Decodable {
+            let id: String?
+            let path: String?
+            let mediaStreams: [MediaStream]?
+        }
+
+        var id: String
+        let type: String?
+        var name: String?
         let sortName: String?
+        let seriesName: String?
+        let seriesId: String?
+        let indexNumber: Int?
+        let parentIndexNumber: Int?
         let productionYear: Int?
         let officialRating: String?
         let runTimeTicks: Int64?
@@ -84,9 +95,11 @@ final class PhoneBridge: ObservableObject {
         let studios: [Studio]?
         let imageTags: [String: String]?
         let backdropImageTags: [String]?
-        let path: String?
+        var path: String?
         let userData: Data?
-        let mediaStreams: [MediaStream]?
+        var mediaStreams: [MediaStream]?
+        let mediaSources: [Source]?
+        let extraType: String?
     }
 
     private struct Page: Decodable { let items: [Item] }
@@ -96,15 +109,44 @@ final class PhoneBridge: ObservableObject {
         do {
             let files = try await drive.everything()
             let page: Page = try await server.client.get("/Items", [
-                .init("userId", userId), .init("recursive", "true"), .init("includeItemTypes", "Movie,Video"),
-                .init("fields", "Overview,Genres,People,Studios,Taglines,Path,MediaStreams,SortName"),
+                .init("userId", userId), .init("recursive", "true"), .init("includeItemTypes", "Movie,Video,Episode"),
+                .init("fields", "Overview,Genres,People,Studios,Taglines,Path,MediaStreams,MediaSources,SortName"),
                 .init("enableUserData", "true"), .init("enableImageTypes", "Primary,Backdrop,Thumb"),
             ])
             var items: [UInt64: Item] = [:]
             for item in page.items {
-                if let path = item.path, let film = cloud.film(atDiskPath: path), film.verified { items[film.id] = item }
+                // A film with versions is one item with a media source per version; each version is its own film
+                // here, with the item's details and its own streams. A version's media source id is its own item.
+                let sources = (item.mediaSources ?? []).filter { $0.path != nil }
+                if sources.count > 1 {
+                    for source in sources {
+                        guard let path = source.path, let film = cloud.film(atDiskPath: path), film.verified else { continue }
+                        var version = item
+                        version.path = path
+                        version.mediaStreams = source.mediaStreams ?? item.mediaStreams
+                        if let id = source.id { version.id = id }
+                        items[film.id] = version
+                    }
+                } else if let path = item.path, let film = cloud.film(atDiskPath: path), film.verified {
+                    items[film.id] = item
+                }
+            }
+            // Extras are items of their own, found through their film.
+            for (filmID, item) in items {
+                guard let film = cloud.film(filmID), let root = cloud.groupRoot(film), root.id == filmID,
+                      !cloud.extras(of: root.id).isEmpty else { continue }
+                for kind in ["SpecialFeatures", "LocalTrailers"] {
+                    let found: [Item]? = try? await server.client.get("/Items/\(item.id)/\(kind)", [
+                        .init("userId", userId), .init("fields", "Path,MediaStreams,Overview"),
+                    ])
+                    for extra in found ?? [] {
+                        guard let path = extra.path, let film = cloud.film(atDiskPath: path), film.verified else { continue }
+                        items[film.id] = extra
+                    }
+                }
             }
             try await publishInfo(items, files: files)
+            try await publishShows(Set(items.values.compactMap(\.seriesId)), files: files, userId: userId)
             try await syncWatching(items, files: files, userId: userId)
             await handleRequests(files)
             lastProblem = nil
@@ -127,10 +169,19 @@ final class PhoneBridge: ObservableObject {
         for (id, item) in items.sorted(by: { $0.key < $1.key }) {
             guard written < 4, let film = cloud.film(id) else { continue }
             let languages = discLanguages(size: film.size)
-            let revision = Self.revision(item, languages: languages)
+            let revision = Self.revision(item, languages: languages, group: groupKey(film))
             let current = existing[String(id)]
             if current?.appProperties?["rev"] == revision { continue }
-            let info = try await makeInfo(id: id, item: item, languages: languages)
+            var info = try await makeInfo(id: id, item: item, languages: languages)
+            if let root = cloud.groupRoot(film) {
+                if film.extraOf != nil {
+                    info.extra = ExtraRef(rootID: String(root.id), kind: film.extraKind ?? .other,
+                                          title: film.extraTitle ?? info.title)
+                } else if cloud.versions(of: root.id).count > 1 {
+                    info.filmVersion = VersionRef(rootID: String(root.id), label: film.versionLabel ?? "Version",
+                                              isDefault: film.versionOf == nil)
+                }
+            }
             let data = try JSONEncoder().encode(info)
             let properties = [PhoneDrive.kind: PhoneDrive.info, "id": String(id), "rev": revision]
             if let current {
@@ -143,12 +194,22 @@ final class PhoneBridge: ObservableObject {
         }
     }
 
-    private static func revision(_ item: Item, languages: [String: String]) -> String {
-        let parts: [String] = [
+    /// What the phone needs to know about a film's group, so a change of default, label or kind rewrites it.
+    private func groupKey(_ film: CloudFilm) -> String {
+        guard let root = cloud.groupRoot(film) else { return "" }
+        return [String(root.id), film.versionLabel ?? "", film.versionOf == nil ? "default" : "",
+                film.extraKind?.rawValue ?? "", film.extraTitle ?? "", "\(cloud.versions(of: root.id).count)"].joined(separator: "/")
+    }
+
+    private static func revision(_ item: Item, languages: [String: String], group: String = "") -> String {
+        let parts: [String] = [group,
             "\(PhoneDrive.infoVersion)", item.name ?? "", "\(item.productionYear ?? 0)", item.officialRating ?? "",
             item.overview ?? "", (item.genres ?? []).joined(separator: ","), item.imageTags?["Primary"] ?? "",
             item.backdropImageTags?.first ?? "", item.imageTags?["Thumb"] ?? "", "\(item.people?.count ?? 0)",
             "\(item.runTimeTicks ?? 0)", languages.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(),
+            item.seriesId ?? "", item.seriesName ?? "", "\(item.parentIndexNumber ?? -1)", "\(item.indexNumber ?? -1)",
+            // Unnumbered episodes take their season from the folder, so a move must rewrite them.
+            item.type == "Episode" && item.parentIndexNumber == nil ? (item.path ?? "") : "",
         ]
         let digest = SHA256.hash(data: Data(parts.joined(separator: "|").utf8))
         return digest.prefix(12).map { String(format: "%02x", $0) }.joined()
@@ -173,16 +234,76 @@ final class PhoneBridge: ObservableObject {
             if type == "Actor", people.filter({ $0.kind == "Actor" }).count >= 15 { continue }
             people.append(.init(name: name, role: person.role, kind: type))
         }
-        let poster = await image(item.id, type: "Primary", tag: item.imageTags?["Primary"], width: 600)
-        var backdrop = await image(item.id, type: "Backdrop/0", tag: item.backdropImageTags?.first, width: 1600)
-        if backdrop == nil { backdrop = await image(item.id, type: "Thumb", tag: item.imageTags?["Thumb"], width: 1600) }
+        var episode: EpisodeRef?
+        if item.type == "Episode", let showID = item.seriesId {
+            // A file Jellyfin couldn't number still sits in a "Season NN" folder; its number may be in the name.
+            let folderSeason = item.path.flatMap { CloudFilm.season(inFolder: ($0 as NSString).deletingLastPathComponent
+                .components(separatedBy: "/").suffix(3).joined(separator: "/")) }
+            let nameNumber = item.path.flatMap { path -> Int? in
+                let name = (path as NSString).lastPathComponent
+                guard let r = name.range(of: #"[Ee](\d{1,4})"#, options: .regularExpression) else { return nil }
+                return Int(name[r].dropFirst())
+            }
+            episode = EpisodeRef(showID: showID, show: item.seriesName ?? "", season: item.parentIndexNumber ?? folderSeason ?? 1,
+                                 number: item.indexNumber ?? nameNumber ?? 0)
+        }
+        let poster: Data?, backdrop: Data?
+        if episode != nil || item.extraType != nil {
+            // An episode's or extra's picture is a still from it; the show's (film's) art is elsewhere.
+            poster = nil
+            backdrop = await image(item.id, type: "Primary", tag: item.imageTags?["Primary"], width: 960)
+        } else {
+            poster = await image(item.id, type: "Primary", tag: item.imageTags?["Primary"], width: 600)
+            var wide = await image(item.id, type: "Backdrop/0", tag: item.backdropImageTags?.first, width: 1600)
+            if wide == nil { wide = await image(item.id, type: "Thumb", tag: item.imageTags?["Thumb"], width: 1600) }
+            backdrop = wide
+        }
         return FilmInfo(
             filmID: String(id), title: item.name ?? "Untitled", sortTitle: item.sortName, year: item.productionYear,
             rating: item.officialRating, seconds: item.runTimeTicks.map { Double($0) / Reel.ticksPerSecond },
             overview: item.overview, tagline: item.taglines?.first, genres: item.genres ?? [],
             score: item.communityRating, people: people, studio: item.studios?.first?.name,
             hdr: video?.videoRangeType, width: video?.width, sound: audio?.displayTitle,
-            languages: languages, poster: poster, backdrop: backdrop)
+            languages: languages, poster: poster, backdrop: backdrop, episode: episode)
+    }
+
+    // MARK: Shows
+
+    /// One details file per show that has an episode in Drive. A show with none left loses its file.
+    private func publishShows(_ shows: Set<String>, files: [DriveFile], userId: String) async throws {
+        let existing = files.filter { kind($0) == PhoneDrive.show }
+        // Never on an empty round: a moment when Jellyfin lists nothing mustn't empty the phone's shows.
+        for file in existing where !shows.isEmpty && !shows.contains(file.appProperties?["id"] ?? "") {
+            try? await drive.trash(file.id)
+        }
+        var written = 0
+        for showID in shows.sorted() where written < 2 {
+            guard let show: Item = try? await server.client.get("/Items/\(showID)", [.init("userId", userId)]) else { continue }
+            let revision = Self.revision(show, languages: [:])
+            let current = existing.first { $0.appProperties?["id"] == showID }
+            if current?.appProperties?["rev"] == revision { continue }
+            var people: [FilmInfo.Person] = []
+            for person in show.people ?? [] {
+                guard let name = person.name, let type = person.type, ["Actor", "Director", "Writer"].contains(type) else { continue }
+                if type == "Actor", people.filter({ $0.kind == "Actor" }).count >= 15 { continue }
+                people.append(.init(name: name, role: person.role, kind: type))
+            }
+            let info = ShowInfo(
+                showID: showID, title: show.name ?? "Untitled", sortTitle: show.sortName, year: show.productionYear,
+                rating: show.officialRating, overview: show.overview, genres: show.genres ?? [], people: people,
+                studio: show.studios?.first?.name,
+                poster: await image(showID, type: "Primary", tag: show.imageTags?["Primary"], width: 600),
+                backdrop: await image(showID, type: "Backdrop/0", tag: show.backdropImageTags?.first, width: 1600))
+            let data = try JSONEncoder().encode(info)
+            let properties = [PhoneDrive.kind: PhoneDrive.show, "id": showID, "rev": revision]
+            if let current {
+                try await drive.replace(current.id, data: data, properties: properties)
+            } else {
+                try await drive.create(name: "\(info.title) (show details).json", parent: try await cloud.reelFolder(),
+                                       properties: properties, data: data)
+            }
+            written += 1
+        }
     }
 
     /// Blu-ray films keep their track languages in the disc's index. If the disc folder is still in the drop

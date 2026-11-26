@@ -27,6 +27,9 @@ targets:
         NSLocalNetworkUsageDescription: Reel Server announces itself on your network so your Apple TV can find it.
         NSBonjourServices: [_reel._tcp]
         NSHumanReadableCopyright: Media server powered by Jellyfin (GPL-2.0).
+        CFBundleURLTypes:
+          - CFBundleURLName: Magnet link
+            CFBundleURLSchemes: [magnet]
     settings:
       base:
         PRODUCT_NAME: Reel Server
@@ -38,10 +41,20 @@ targets:
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: Apple Development
         PROVISIONING_PROFILE_SPECIFIER: ""
+    # reel-torrent (Tools/build-torrent.sh) goes in Contents/MacOS, signed before the app is.
+    postBuildScripts:
+      - name: Embed torrent helper
+        basedOnDependencyAnalysis: false
+        script: |
+          HELPER="$HOME/Developer/Reel/vendor/reel-torrent/reel-torrent"
+          DEST="$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/reel-torrent"
+          cp "$HELPER" "$DEST"
+          codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" "$DEST"
   Reel:
     type: application
     platform: tvOS
-    sources: [TV, Shared]
+    # The engine plays Dolby Vision profile 7 films as profile 8.1 (FFmpeg from Tools/build-ffmpeg.sh).
+    sources: [TV, Shared, Engine]
     info:
       path: TV/Info.plist
       properties:
@@ -62,6 +75,11 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: App Icon & Top Shelf Image
         CODE_SIGN_STYLE: Automatic
         TARGETED_DEVICE_FAMILY: "3"
+        SWIFT_OBJC_BRIDGING_HEADER: TV/Reel-Bridging-Header.h
+        HEADER_SEARCH_PATHS: ["$(SRCROOT)/Engine", "$(HOME)/Developer/Reel/vendor/ffmpeg/$(PLATFORM_NAME)/include"]
+        LIBRARY_SEARCH_PATHS: ["$(HOME)/Developer/Reel/vendor/ffmpeg/$(PLATFORM_NAME)/lib"]
+        OTHER_LDFLAGS: ["-lavformat", "-lavcodec", "-lswresample", "-lavutil", "-lz", "-liconv"]
+        GCC_C_LANGUAGE_STANDARD: gnu17
   ReelPhone:
     type: application
     platform: iOS
@@ -76,6 +94,8 @@ targets:
         UIUserInterfaceStyle: Dark
         UIStatusBarStyle: UIStatusBarStyleLightContent
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        # iPad turns every way and shares its screen with other apps.
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UIBackgroundModes: [audio, fetch]
         BGTaskSchedulerPermittedIdentifiers: [com.bjartur.reel.phone.refresh]
         CFBundleURLTypes:
@@ -91,7 +111,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.bjartur.reel.phone
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
-        TARGETED_DEVICE_FAMILY: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
         SWIFT_OBJC_BRIDGING_HEADER: Phone/Reel-Bridging-Header.h

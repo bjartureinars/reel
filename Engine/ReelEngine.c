@@ -17,11 +17,13 @@
 #include <string.h>
 
 #include <libavcodec/avcodec.h>
+#include <libavcodec/bsf.h>
 #include <libavformat/avformat.h>
 #include <libavutil/audio_fifo.h>
 #include <libavutil/avstring.h>
 #include <libavutil/avutil.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/dovi_meta.h>
 #include <libavutil/intreadwrite.h>
 #include <libavutil/opt.h>
 #include <libswresample/swresample.h>
@@ -87,7 +89,35 @@ struct ReelMedia {
     AVCodecContext *subtitleDecoder;
     ReelCueHandler cueHandler;
     void *cueContext;
+
+    // Dolby Vision profile 7 (UHD Blu-ray) is turned into profile 8.1, which Apple devices play.
+    bool dolbyVision7;
 };
+
+static int dolby_vision_profile(const AVCodecParameters *par) {
+    const AVPacketSideData *sd = av_packet_side_data_get(par->coded_side_data, par->nb_coded_side_data,
+                                                         AV_PKT_DATA_DOVI_CONF);
+    return sd ? ((const AVDOVIDecoderConfigurationRecord *)sd->data)->dv_profile : 0;
+}
+
+/// A converter for one segment: segments are made alone after a seek, so each starts fresh.
+static int open_dolby_vision(const AVStream *video, AVBSFContext **out) {
+    const AVBitStreamFilter *filter = av_bsf_get_by_name("dovi_rpu");
+    if (!filter) return AVERROR_BSF_NOT_FOUND;
+    AVBSFContext *bsf = NULL;
+    int result = av_bsf_alloc(filter, &bsf);
+    if (result < 0) return result;
+    if ((result = avcodec_parameters_copy(bsf->par_in, video->codecpar)) < 0) goto fail;
+    bsf->time_base_in = video->time_base;
+    if ((result = av_opt_set_int(bsf->priv_data, "to_p81", 1, 0)) < 0) goto fail;
+    if ((result = av_opt_set_int(bsf->priv_data, "compression", 0, 0)) < 0) goto fail;
+    if ((result = av_bsf_init(bsf)) < 0) goto fail;
+    *out = bsf;
+    return 0;
+fail:
+    av_bsf_free(&bsf);
+    return result;
+}
 
 // MARK: Queues
 
@@ -289,6 +319,8 @@ ReelMedia *reel_open(ReelRead read, void *context, int64_t size, int *error) {
     if (m->video < 0) goto fail;
 
     AVStream *video = m->input->streams[m->video];
+    m->dolbyVision7 = video->codecpar->codec_id == AV_CODEC_ID_HEVC
+        && dolby_vision_profile(video->codecpar) == 7 && av_bsf_get_by_name("dovi_rpu");
     if (video->start_time != AV_NOPTS_VALUE) m->origin = av_rescale_q(video->start_time, video->time_base, MICRO);
     else if (m->input->start_time != AV_NOPTS_VALUE) m->origin = m->input->start_time;
 
@@ -393,6 +425,9 @@ bool reel_stream(const ReelMedia *m, int position, ReelStream *out) {
         out->frameRate = 1e6 / (double)m->frame;
         if (par->color_trc == AVCOL_TRC_SMPTE2084) out->range = ReelRangePQ;
         else if (par->color_trc == AVCOL_TRC_ARIB_STD_B67) out->range = ReelRangeHLG;
+        int profile = dolby_vision_profile(par);
+        // What plays: profile 7 becomes 8.1; other profiles Apple devices can't play are left as HDR10.
+        out->dolbyVision = profile == 7 && m->dolbyVision7 ? 8 : (profile == 5 || profile == 8) ? profile : 0;
     } else if (out->kind == ReelKindAudio) {
         out->untouched = can_copy_audio(par);
         // Seven or eight channels are folded down to 5.1, so those don't stay lossless.
@@ -796,6 +831,7 @@ static int write_segment(ReelMedia *m, int segment, int cut, int64_t from, int64
     AVFormatContext *output = NULL;
     AVDictionary *options = NULL;
     AVPacket *packet = NULL;
+    AVBSFContext *dolbyVision = NULL;
     uint8_t *whole = NULL;
     int64_t *order = NULL;
     int64_t bytes = 0;
@@ -808,12 +844,23 @@ static int write_segment(ReelMedia *m, int segment, int cut, int64_t from, int64
     const AVStream *videoIn = m->input->streams[m->video];
     AVStream *videoOut = avformat_new_stream(output, NULL);
     if (!videoOut) { result = AVERROR(ENOMEM); goto done; }
-    if ((result = avcodec_parameters_copy(videoOut->codecpar, videoIn->codecpar)) < 0) goto done;
+    if (m->dolbyVision7) {
+        if ((result = open_dolby_vision(videoIn, &dolbyVision)) < 0) goto done;
+        // The converter's output says profile 8.1, which goes in the 'dvvC' box.
+        if ((result = avcodec_parameters_copy(videoOut->codecpar, dolbyVision->par_out)) < 0) goto done;
+        output->strict_std_compliance = FF_COMPLIANCE_UNOFFICIAL;
+    } else {
+        if ((result = avcodec_parameters_copy(videoOut->codecpar, videoIn->codecpar)) < 0) goto done;
+        int profile = dolby_vision_profile(videoIn->codecpar);
+        if (profile == 5 || profile == 8) output->strict_std_compliance = FF_COMPLIANCE_UNOFFICIAL;
+        else av_packet_side_data_remove(videoOut->codecpar->coded_side_data, &videoOut->codecpar->nb_coded_side_data,
+                                        AV_PKT_DATA_DOVI_CONF);
+    }
+    // 'hvc1' with a 'dvvC' box is how Apple wants profile 8.1: HDR10 for anything that can't show Dolby Vision.
     videoOut->codecpar->codec_tag = videoIn->codecpar->codec_id == AV_CODEC_ID_HEVC
         ? MKTAG('h', 'v', 'c', '1') : MKTAG('a', 'v', 'c', '1');
-    // iPhones can't play Dolby Vision profile 7 as such. Its HDR10 picture plays as is.
-    av_packet_side_data_remove(videoOut->codecpar->coded_side_data, &videoOut->codecpar->nb_coded_side_data,
-                               AV_PKT_DATA_DOVI_CONF);
+    // Profile 5 has no HDR10 picture to fall back on, so it's marked as Dolby Vision only.
+    if (!m->dolbyVision7 && dolby_vision_profile(videoIn->codecpar) == 5) videoOut->codecpar->codec_tag = MKTAG('d', 'v', 'h', '1');
     videoOut->time_base = (AVRational){1, VIDEO_SCALE};
 
     AVStream *audioOut = NULL;
@@ -842,6 +889,11 @@ static int write_segment(ReelMedia *m, int segment, int cut, int64_t from, int64
     for (int i = 0; i < cut; i++) {
         if ((result = av_packet_ref(packet, m->picture.items[i].packet)) < 0) goto done;
         bytes += packet->size;
+        if (dolbyVision) {
+            // One packet in, one out: only the Dolby Vision parts of it change.
+            if ((result = av_bsf_send_packet(dolbyVision, packet)) < 0) goto done;
+            if ((result = av_bsf_receive_packet(dolbyVision, packet)) < 0) goto done;
+        }
         int64_t pts = av_rescale_q(m->picture.items[i].time + shift, MICRO, videoOut->time_base);
         int64_t dts = av_rescale_q(FFMAX(order[i] + shift - m->delay, 0), MICRO, videoOut->time_base);
         if (previous != INT64_MIN && dts <= previous) dts = previous + 1;
@@ -920,6 +972,7 @@ done:
     av_free(whole);
     free(order);
     av_packet_free(&packet);
+    av_bsf_free(&dolbyVision);
     av_dict_free(&options);
     avformat_free_context(output);
     return result < 0 ? result : 0;
@@ -986,6 +1039,57 @@ int reel_segment(ReelMedia *m, int segment, uint8_t **init, int *initSize,
         m->next = segment + 1;
     }
     return 0;
+}
+
+static void video_codec(const AVCodecParameters *par, char *out, int size) {
+    const uint8_t *x = par->extradata;
+    if (par->codec_id == AV_CODEC_ID_HEVC && x && par->extradata_size >= 13 && x[0] == 1) {
+        // ISO/IEC 14496-15 annex E: profile, compatibility flags (bit-reversed), tier and level, constraints.
+        static const char *spaces[] = {"", "A", "B", "C"};
+        uint32_t flags = AV_RB32(x + 2), reversed = 0;
+        for (int i = 0; i < 32; i++) if (flags & (1u << i)) reversed |= 1u << (31 - i);
+        // Always "L", as Jellyfin writes it: Apple TV accepts that for high-tier UHD Blu-ray video, which it plays.
+        int n = snprintf(out, size, "hvc1.%s%d.%X.L%d", spaces[x[1] >> 6], x[1] & 0x1f, reversed, x[12]);
+        int last = 5;
+        while (last >= 0 && x[6 + last] == 0) last--;
+        for (int i = 0; i <= last && n > 0 && n < size; i++) n += snprintf(out + n, size - n, ".%02X", x[6 + i]);
+    } else if (par->codec_id == AV_CODEC_ID_H264 && x && par->extradata_size >= 4 && x[0] == 1) {
+        snprintf(out, size, "avc1.%02X%02X%02X", x[1], x[2], x[3]);
+    } else {
+        snprintf(out, size, par->codec_id == AV_CODEC_ID_HEVC ? "hvc1" : "avc1");
+    }
+}
+
+void reel_codecs(const ReelMedia *m, char *codecs, int codecsSize, char *supplemental, int supplementalSize) {
+    const AVCodecParameters *video = m->input->streams[m->video]->codecpar;
+    char picture[64];
+    video_codec(video, picture, sizeof picture);
+    const char *sound = NULL;
+    if (m->audio >= 0) {
+        if (!m->copyAudio) sound = "alac";
+        else switch (m->input->streams[m->audio]->codecpar->codec_id) {
+            case AV_CODEC_ID_AC3: sound = "ac-3"; break;
+            case AV_CODEC_ID_EAC3: sound = "ec-3"; break;
+            case AV_CODEC_ID_AAC: sound = "mp4a.40.2"; break;
+            case AV_CODEC_ID_ALAC: sound = "alac"; break;
+            case AV_CODEC_ID_FLAC: sound = "fLaC"; break;
+            case AV_CODEC_ID_MP3: sound = "mp4a.40.34"; break;
+            case AV_CODEC_ID_OPUS: sound = "Opus"; break;
+            default: break;
+        }
+    }
+    snprintf(codecs, codecsSize, sound ? "%s,%s" : "%s", picture, sound);
+
+    supplemental[0] = 0;
+    const AVPacketSideData *sd = av_packet_side_data_get(video->coded_side_data, video->nb_coded_side_data,
+                                                         AV_PKT_DATA_DOVI_CONF);
+    if (!sd) return;
+    const AVDOVIDecoderConfigurationRecord *cfg = (const AVDOVIDecoderConfigurationRecord *)sd->data;
+    // Profile 7 plays as 8.1; profile 8 says what its base layer is (1 HDR10, 2 SDR, 4 HLG).
+    int compatibility = m->dolbyVision7 ? 1 : cfg->dv_bl_signal_compatibility_id;
+    const char *brand = compatibility == 1 ? "db1p" : compatibility == 2 ? "db2g" : compatibility == 4 ? "db4h" : NULL;
+    if ((m->dolbyVision7 || cfg->dv_profile == 8) && brand)
+        snprintf(supplemental, supplementalSize, "dvh1.08.%02d/%s", cfg->dv_level, brand);
 }
 
 void reel_free(void *pointer) {

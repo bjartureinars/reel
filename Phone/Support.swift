@@ -1,5 +1,21 @@
 import SwiftUI
 
+/// "iPhone" or "iPad", for text that names the device Reel is running on.
+enum Device {
+    static let isPad = UIDevice.current.userInterfaceIdiom == .pad
+    static let name = isPad ? "iPad" : "iPhone"
+}
+
+/// Sizes that grow with the screen. Regular width means an iPad that isn't sharing its screen with a narrow app.
+enum Metrics {
+    static func margin(_ regular: Bool) -> CGFloat { regular ? 32 : 16 }
+    static func poster(_ regular: Bool) -> CGFloat { regular ? 168 : 124 }
+    static func gridPoster(_ regular: Bool) -> CGFloat { regular ? 150 : 108 }
+    static func wide(_ regular: Bool) -> CGFloat { regular ? 360 : 260 }
+    /// Text and buttons stay this narrow on a big screen, so lines stay readable.
+    static let readableWidth: CGFloat = 720
+}
+
 enum Theme {
     /// Projector-lamp gold, the one brand colour: the main action, progress and selection. 10.6:1 on black.
     static let gold = Color(red: 0.96, green: 0.73, blue: 0.29)

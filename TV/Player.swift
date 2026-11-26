@@ -73,9 +73,12 @@ final class PlaybackController: NSObject, AVPlayerViewControllerDelegate {
     private var stopped = true
     private var starting = false
     private let monitor = BitrateMonitor()
+    private var engine: EnginePlayback?
 
     /// With no `source`, a downloaded film plays from the Mac and other Drive films stream.
-    func play(_ item: Item, from seconds: Double, session: AppSession, source wanted: PlaybackSource? = nil) async {
+    /// `version` is the id of the version to play, for a film with several; nil plays the film's own.
+    func play(_ item: Item, from seconds: Double, session: AppSession, source wanted: PlaybackSource? = nil,
+              version: String? = nil) async {
         guard !starting else { return }
         starting = true
         defer { starting = false }
@@ -85,12 +88,13 @@ final class PlaybackController: NSObject, AVPlayerViewControllerDelegate {
             let cloud = CloudClient(jellyfin: client)
             var sourceLabel = "Your Mac"
             // If Reel Server's API is unreachable, Jellyfin can still play the film.
-            if let film = (try? await cloud.status(item.id)) ?? nil, film.phase != .local {
+            let target = version ?? item.id
+            if let film = (try? await cloud.status(target)) ?? nil, film.phase != .local {
                 let chosen = wanted ?? (film.phase == .downloaded ? .mac : .stream)
-                try await cloud.perform("play", item.id, [.init("source", chosen.rawValue)])
+                try await cloud.perform("play", target, [.init("source", chosen.rawValue)])
                 sourceLabel = chosen.label
             }
-            let body: [String: Any] = [
+            var body: [String: Any] = [
                 "UserId": userId,
                 "DeviceProfile": DeviceProfile.appleTV4K,
                 "MaxStreamingBitrate": DeviceProfile.maxBitrate,
@@ -103,14 +107,24 @@ final class PlaybackController: NSObject, AVPlayerViewControllerDelegate {
                 // No subtitles by default: burning in an image subtitle would force a full re-encode of 4K HDR.
                 "SubtitleStreamIndex": -1,
             ]
+            if let version { body["MediaSourceId"] = version }
             let info: PlaybackInfoResponse = try await client.post("/Items/\(item.id)/PlaybackInfo",
                                                                    [.init("userId", userId)], json: body)
-            guard let source = info.mediaSources.first else {
+            guard let source = info.mediaSources.first(where: { $0.id == version }) ?? info.mediaSources.first else {
                 throw JellyfinError(status: 0, message: info.errorCode ?? "The server found nothing to play.")
             }
             let containers = Set((source.container ?? "").lowercased().split(separator: ",").map(String.init))
             let url: URL
-            if source.supportsDirectPlay == true, !containers.isDisjoint(with: ["mp4", "m4v", "mov"]) {
+            var dolbyVision = false
+            if EnginePlayback.needed(for: source),
+               let started = try? await EnginePlayback.start(itemID: item.id, source: source, client: client, from: seconds,
+                                                             onError: { [weak self] error in self?.engineFailed(error) }) {
+                // Jellyfin would send only the HDR10 part; Reel's engine keeps the Dolby Vision.
+                engine = started
+                url = started.url
+                playMethod = "DirectPlay"
+                dolbyVision = true
+            } else if source.supportsDirectPlay == true, !containers.isDisjoint(with: ["mp4", "m4v", "mov"]) {
                 var q: [URLQueryItem] = [.init("static", "true"), .init("mediaSourceId", source.id)]
                 if let tag = source.eTag { q.append(.init("Tag", tag)) }
                 url = client.url("/Videos/\(item.id)/stream", q, withKey: true)
@@ -144,14 +158,14 @@ final class PlaybackController: NSObject, AVPlayerViewControllerDelegate {
             // Summaries from shelves can lack stream details; the panel needs them.
             let detailed = (try? await client.item(item.id, userId: userId)) ?? item
             monitor.start(player: player, item: detailed, client: client, source: sourceLabel,
-                          direct: playMethod == "DirectPlay")
+                          direct: playMethod == "DirectPlay", dolbyVision: dolbyVision)
 
             statusObservation = playerItem.observe(\.status, options: [.new]) { [weak self] observed, _ in
                 Task { @MainActor in self?.itemStatusChanged(observed, startAt: seconds) }
             }
             endObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime,
                                                                  object: playerItem, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.dismissPlayer() }
+                Task { @MainActor in self?.playedToEnd() }
             }
             timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 10, preferredTimescale: 1),
                                                           queue: .main) { [weak self] _ in
@@ -165,6 +179,7 @@ final class PlaybackController: NSObject, AVPlayerViewControllerDelegate {
     }
 
     private var didStart = false
+    private var triedFallback = false
 
     private func itemStatusChanged(_ playerItem: AVPlayerItem, startAt seconds: Double) {
         switch playerItem.status {
@@ -174,6 +189,23 @@ final class PlaybackController: NSObject, AVPlayerViewControllerDelegate {
                 player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
             }
             report("/Sessions/Playing")
+        case .failed where !didStart && !triedFallback && engine != nil:
+            // Apple TV turned down the playlist describing the stream; the stream itself plays without it.
+            triedFallback = true
+            guard let engine, let player else { return }
+            let retry = AVPlayerItem(url: engine.fallbackURL)
+            retry.externalMetadata = playerItem.externalMetadata
+            retry.preferredForwardBufferDuration = playerItem.preferredForwardBufferDuration
+            statusObservation = retry.observe(\.status, options: [.new]) { [weak self] observed, _ in
+                Task { @MainActor in self?.itemStatusChanged(observed, startAt: seconds) }
+            }
+            if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+            endObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime,
+                                                                 object: retry, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.playedToEnd() }
+            }
+            player.replaceCurrentItem(with: retry)
+            player.play()
         case .failed:
             let message = playerItem.error?.localizedDescription ?? "Playback failed."
             dismissPlayer()
@@ -181,6 +213,37 @@ final class PlaybackController: NSObject, AVPlayerViewControllerDelegate {
         default:
             break
         }
+    }
+
+    /// At the end of an episode the next one starts, as you'd expect from a TV show. Anything else closes.
+    private func playedToEnd() {
+        guard let item, item.isEpisode, let show = item.seriesId, let session,
+              let client = session.client, let userId = session.userId else { return dismissPlayer() }
+        Task {
+            let page: ItemsPage? = try? await client.get("/Shows/\(show)/Episodes", [
+                .init("userId", userId), .init("startItemId", item.id), .init("limit", "2"),
+                .init("fields", "Overview,MediaStreams"), .init("enableUserData", "true"),
+            ])
+            guard let next = page?.items.dropFirst().first, next.id != item.id else { return dismissPlayer() }
+            // Closing this one tells the server it was watched to the end; then the next plays from its start.
+            if let vc = playerViewController, vc.presentingViewController != nil {
+                vc.dismiss(animated: false) { [weak self] in
+                    Task { @MainActor in
+                        self?.finish()
+                        await self?.play(next, from: 0, session: session)
+                    }
+                }
+            } else {
+                finish()
+                await play(next, from: 0, session: session)
+            }
+        }
+    }
+
+    private func engineFailed(_ error: Error) {
+        guard !stopped else { return }
+        dismissPlayer()
+        session?.playbackError = "\(error.localizedDescription)\nIf this keeps happening, check that your Mac is awake and on the same network."
     }
 
     private func present(_ vc: UIViewController) {
@@ -233,6 +296,7 @@ final class PlaybackController: NSObject, AVPlayerViewControllerDelegate {
         report("/Sessions/Playing/Stopped")
         stopped = true
         didStart = false
+        triedFallback = false
         monitor.stop()
         if let timeObserver { player?.removeTimeObserver(timeObserver) }
         timeObserver = nil
@@ -241,6 +305,8 @@ final class PlaybackController: NSObject, AVPlayerViewControllerDelegate {
         statusObservation = nil
         player?.pause()
         player = nil
+        engine?.stop()
+        engine = nil
         if let client = session?.client, let playSessionId {
             let deviceId = client.deviceId
             Task { try? await client.send("DELETE", "/Videos/ActiveEncodings",

@@ -18,8 +18,11 @@ struct ReelServerApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("Add Films…") { addWithPanel(.films) }
                     .keyboardShortcut("o")
-                Button("Add Home Videos…") { addWithPanel(.homeVideos) }
+                Button("Add TV Shows…") { addWithPanel(.shows) }
                     .keyboardShortcut("o", modifiers: [.command, .shift])
+                Button("Add Magnet Link…") { server.torrents.askingForLink = true }
+                    .keyboardShortcut("m", modifiers: [.command, .shift])
+                    .disabled(!server.cloud.connected)
             }
             CommandMenu("Server") {
                 Button("Scan Library Now") { Task { await server.rescan() } }
@@ -54,10 +57,11 @@ func addWithPanel(_ kind: LibraryKind) {
     panel.canChooseDirectories = true
     panel.allowedContentTypes = [.movie, .folder]
     panel.prompt = "Add to \(kind.rawValue)"
+    let what = kind == .shows ? "a show’s folder or episodes" : "films or folders"
     switch ServerManager.shared.addMode {
-    case .move: panel.message = "Choose films or folders. They’ll move to Google Drive and be deleted from this Mac once Google’s copy is verified."
-    case .copy: panel.message = "Choose films or folders. A copy goes to Google Drive. Your originals stay where they are."
-    case .link: panel.message = "Choose films or folders. They’ll be linked into the library and stay on this Mac."
+    case .move: panel.message = "Choose \(what). They’ll move to Google Drive and be deleted from this Mac once Google’s copy is verified."
+    case .copy: panel.message = "Choose \(what). A copy goes to Google Drive. Your originals stay where they are."
+    case .link: panel.message = "Choose \(what). They’ll be linked into the library and stay on this Mac."
     }
     guard panel.runModal() == .OK else { return }
     ServerManager.shared.add(panel.urls, to: kind)
@@ -67,6 +71,14 @@ func addWithPanel(_ kind: LibraryKind) {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Task { await ServerManager.shared.start() }
+    }
+
+    /// Magnet links clicked in a browser. Nothing downloads until it's approved in the window that opens.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.scheme?.lowercased() == "magnet" {
+            ServerManager.shared.torrents.open(url.absoluteString)
+        }
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     /// Closing the window keeps the server running from the menu bar.

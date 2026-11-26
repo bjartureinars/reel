@@ -10,6 +10,8 @@ struct FilmDetailView: View {
     @State private var confirmDelete = false
     @State private var expanded = false
     @State private var problem: String?
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    private var regular: Bool { sizeClass == .regular }
 
     private var current: Film { library.film(film.id) ?? film }
     private var state: WatchState { library.state(current) }
@@ -36,10 +38,14 @@ struct FilmDetailView: View {
                             .onTapGesture { withAnimation { expanded.toggle() } }
                             .accessibilityHint(expanded ? "" : "Double-tap to read more")
                     }
+                    VersionsAndExtras(film: current)
                     people
                     facts
                 }
-                .padding(.horizontal, 16)
+                .frame(maxWidth: regular ? Metrics.readableWidth : nil, alignment: .leading)
+                .padding(.horizontal, Metrics.margin(regular))
+                related
+                    .padding(.top, 8)
             }
             .padding(.bottom, 32)
         }
@@ -72,7 +78,7 @@ struct FilmDetailView: View {
     private var header: some View {
         ZStack(alignment: .bottomLeading) {
             Artwork(url: current.backdropURL, symbol: current.isHomeVideo ? "video" : "film")
-                .frame(height: 300)
+                .frame(height: regular ? 480 : 300)
                 .frame(maxWidth: .infinity)
                 .clipped()
                 .overlay {
@@ -81,6 +87,9 @@ struct FilmDetailView: View {
                 }
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 8) {
+                if let episode = current.episode, let label = current.episodeLabel {
+                    Text("\(episode.show) · \(label)").font(.headline).foregroundStyle(Theme.gold)
+                }
                 Text(current.title)
                     .font(.largeTitle.weight(.bold))
                     .lineLimit(3)
@@ -94,7 +103,8 @@ struct FilmDetailView: View {
                     Text(genres.prefix(3).joined(separator: ", ")).font(.subheadline).foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 16)
+            .frame(maxWidth: regular ? Metrics.readableWidth : nil, alignment: .leading)
+            .padding(.horizontal, Metrics.margin(regular))
         }
     }
 
@@ -105,7 +115,7 @@ struct FilmDetailView: View {
                 Label(resume > 0 ? "Resume" : "Play", systemImage: "play.fill")
             }
             .buttonStyle(PrimaryButtonStyle())
-            .accessibilityHint(download?.state == .ready ? "Plays the copy on this iPhone" : "Streams the original from Google Drive")
+            .accessibilityHint(download?.state == .ready ? "Plays the copy on this \(Device.name)" : "Streams the original from Google Drive")
             if resume > 0, let total = current.seconds {
                 HStack {
                     ProgressLine(value: resume / total)
@@ -214,6 +224,25 @@ struct FilmDetailView: View {
         }
     }
 
+    /// For a film, others like it; for an episode, the rest of its season.
+    @ViewBuilder private var related: some View {
+        if let episode = current.episode, let show = library.show(episode.showID) {
+            let others = show.episodes(in: episode.season).filter { $0.id != current.id }
+            if !others.isEmpty {
+                Shelf(title: "More from \(show.title)") {
+                    ForEach(others) { WideCard(film: $0) }
+                }
+            }
+        } else {
+            let similar = library.similar(to: current)
+            if !similar.isEmpty {
+                Shelf(title: "More Like This") {
+                    ForEach(similar) { PosterCard(film: $0) }
+                }
+            }
+        }
+    }
+
     private var facts: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("About This File").font(.title3.weight(.bold)).accessibilityAddTraits(.isHeader)
@@ -245,5 +274,119 @@ private struct ActionButton: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
         .accessibilityAddTraits(.isButton)
+    }
+}
+
+// MARK: - Versions and extras
+
+/// Below the description: the film's other versions and its bonus material, as in the TV app.
+private struct VersionsAndExtras: View {
+    let film: Film
+    @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var library: Library
+    @State private var tab = Tab.versions
+
+    enum Tab: String, CaseIterable, Identifiable {
+        case versions = "Versions", extras = "Extras"
+        var id: String { rawValue }
+    }
+
+    var body: some View {
+        let versions = library.versions(of: film)
+        let extras = library.extras(of: film)
+        let tabs = Tab.allCases.filter { $0 == .versions ? !versions.isEmpty : !extras.isEmpty }
+        if !tabs.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                if tabs.count > 1 {
+                    Picker("Show", selection: $tab) {
+                        ForEach(tabs) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                } else {
+                    Text(tabs[0].rawValue).font(.title3.weight(.bold)).accessibilityAddTraits(.isHeader)
+                }
+                switch tabs.count > 1 ? tab : tabs[0] {
+                case .versions:
+                    ForEach(versions) { VersionRow(film: $0) }
+                case .extras:
+                    ForEach(extras) { ExtraRow(film: $0) }
+                }
+            }
+            .padding(.vertical, 4)
+            .onAppear { if !tabs.contains(tab), let first = tabs.first { tab = first } }
+        }
+    }
+}
+
+/// A version: its name and picture, and whether Play uses it. Tapping plays it; holding offers downloading.
+private struct VersionRow: View {
+    let film: Film
+    @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var library: Library
+
+    var body: some View {
+        let version = film.info?.filmVersion
+        Button { app.play(film) } label: {
+            HStack(spacing: 12) {
+                Image(systemName: version?.isDefault == true ? "checkmark.circle.fill" : "play.circle")
+                    .font(.title2)
+                    .foregroundStyle(version?.isDefault == true ? Theme.gold : .secondary)
+                    .frame(width: 32)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(version?.label ?? film.title).font(.headline)
+                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Badges(film: film)
+            }
+            .padding(12)
+            .frame(minHeight: 56)
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu { FilmMenu(film: film) }
+        .accessibilityLabel([version?.label, version?.isDefault == true ? "default version" : nil, detail]
+            .compactMap { $0 }.joined(separator: ", "))
+        .accessibilityHint("Plays this version")
+    }
+
+    private var detail: String {
+        let resume = library.resumeSeconds(film)
+        return [film.info?.filmVersion?.isDefault == true ? "Default" : nil,
+                resume > 0 ? "\(((film.seconds ?? 0) - resume).runtimeText) left" : film.seconds?.runtimeText,
+                film.size.fileSize].compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
+/// A trailer or other extra: a still, its name, kind and length. Tapping plays it.
+private struct ExtraRow: View {
+    let film: Film
+    @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var library: Library
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    var body: some View {
+        Button { app.play(film) } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Artwork(url: film.backdropURL, symbol: "sparkles.tv")
+                    .frame(width: sizeClass == .regular ? 200 : 140, height: (sizeClass == .regular ? 200 : 140) * 9 / 16)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(alignment: .bottom) {
+                        if let progress = library.progress(film) { ProgressLine(value: progress).padding(6) }
+                    }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(film.title).font(.subheadline.weight(.semibold)).lineLimit(2)
+                    Text([film.info?.extra?.kind.title, film.seconds?.runtimeText].compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu { FilmMenu(film: film) }
+        .accessibilityLabel("\(film.title), \(film.info?.extra?.kind.title ?? "Extra")")
+        .accessibilityHint("Plays it")
     }
 }

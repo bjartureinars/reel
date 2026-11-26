@@ -66,8 +66,9 @@ struct HomeView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var library: Library
     @EnvironmentObject private var downloads: DownloadCenter
+    @State private var showingSettings = false
 
-    private var hero: Film? { library.continueWatching.first ?? library.movies.first }
+    private var hero: Film? { library.continueWatching.first ?? library.movies.first ?? library.nextUp.first }
 
     var body: some View {
         ScrollView {
@@ -88,9 +89,24 @@ struct HomeView: View {
                         ForEach(library.continueWatching) { WideCard(film: $0, playsDirectly: true) }
                     }
                 }
+                if !library.nextUp.isEmpty {
+                    Shelf(title: "Next Up") {
+                        ForEach(library.nextUp) { WideCard(film: $0, playsDirectly: true) }
+                    }
+                }
+                if !library.shows.isEmpty {
+                    Shelf(title: "TV Shows") {
+                        ForEach(library.shows.prefix(20)) { ShowCard(show: $0) }
+                    }
+                }
                 if !library.movies.isEmpty {
                     Shelf(title: "Recently Added") {
                         ForEach(library.movies.prefix(20)) { PosterCard(film: $0) }
+                    }
+                }
+                ForEach(library.genreRows, id: \.genre) { row in
+                    Shelf(title: row.genre) {
+                        ForEach(row.films.prefix(20)) { PosterCard(film: $0) }
                     }
                 }
                 if !library.myList.isEmpty {
@@ -100,20 +116,37 @@ struct HomeView: View {
                 }
                 let saved = library.films.filter { downloads.download(for: $0)?.state == .ready }
                 if !saved.isEmpty {
-                    Shelf(title: "On This iPhone") {
+                    Shelf(title: "On This \(Device.name)") {
                         ForEach(saved) { PosterCard(film: $0) }
-                    }
-                }
-                if !library.homeVideos.isEmpty {
-                    Shelf(title: "Home Videos") {
-                        ForEach(library.homeVideos) { WideCard(film: $0) }
                     }
                 }
             }
             .padding(.bottom, 24)
         }
         .ignoresSafeArea(edges: .top)
+        .overlay(alignment: .topTrailing) {
+            if !Device.isPad {
+                Button { showingSettings = true } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.title3)
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(.black.opacity(0.35), in: Circle())
+                }
+                .accessibilityLabel("Settings")
+                .padding(.trailing, 16)
+            }
+        }
+        .sheet(isPresented: $showingSettings) {
+            NavigationStack {
+                SettingsView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) { Button("Done") { showingSettings = false } }
+                    }
+            }
+        }
         .navigationDestination(for: Film.self) { FilmDetailView(film: $0) }
+        .navigationDestination(for: Show.self) { ShowDetailView(show: $0) }
         .refreshable { await library.refresh() }
         .toolbar(.hidden, for: .navigationBar)
     }
@@ -123,11 +156,12 @@ private struct HeroBanner: View {
     let film: Film
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var library: Library
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             Artwork(url: film.backdropURL)
-                .frame(height: 460)
+                .frame(height: sizeClass == .regular ? 620 : 460)
                 .frame(maxWidth: .infinity)
                 .clipped()
                 .overlay {
@@ -140,10 +174,13 @@ private struct HeroBanner: View {
                 Text(library.resumeSeconds(film) > 0 ? "CONTINUE WATCHING" : "NEW IN YOUR LIBRARY")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(Theme.gold)
-                Text(film.title)
+                Text(film.episode?.show ?? film.title)
                     .font(.largeTitle.weight(.bold))
                     .lineLimit(2)
                     .minimumScaleFactor(0.8)
+                if let label = film.episodeLabel {
+                    Text("\(label): \(film.title)").font(.headline).foregroundStyle(.white.opacity(0.9))
+                }
                 HStack(spacing: 10) {
                     if !film.metaLine.isEmpty { Text(film.metaLine).font(.subheadline).foregroundStyle(.secondary) }
                     Badges(film: film)
@@ -160,7 +197,9 @@ private struct HeroBanner: View {
                 }
                 .padding(.top, 4)
             }
-            .padding(.horizontal, 16)
+            .frame(maxWidth: sizeClass == .regular ? 560 : nil, alignment: .leading)
+            .padding(.horizontal, Metrics.margin(sizeClass == .regular))
+            .padding(.bottom, sizeClass == .regular ? 12 : 0)
         }
     }
 }
@@ -191,9 +230,10 @@ private struct EmptyLibrary: View {
 
 struct LibraryView: View {
     @EnvironmentObject private var library: Library
-    @AppStorage("library.kind") private var kind = "films"
     @AppStorage("library.sort") private var sort = Sort.added.rawValue
     @State private var genre: String?
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    private var regular: Bool { sizeClass == .regular }
 
     enum Sort: String, CaseIterable, Identifiable {
         case added = "Recently Added", title = "Title", year = "Year"
@@ -201,7 +241,7 @@ struct LibraryView: View {
     }
 
     private var shown: [Film] {
-        var films = kind == "films" ? library.movies : library.homeVideos
+        var films = library.movies
         if let genre { films = films.filter { $0.info?.genres.contains(genre) == true } }
         switch Sort(rawValue: sort) ?? .added {
         case .added: return films.sorted { $0.addedAt > $1.addedAt }
@@ -212,30 +252,18 @@ struct LibraryView: View {
 
     var body: some View {
         ScrollView {
-            Picker("Show", selection: $kind) {
-                Text("Films").tag("films")
-                Text("Home Videos").tag("home")
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
             if shown.isEmpty {
-                ContentUnavailableView(kind == "films" ? "No Films" : "No Home Videos", systemImage: kind == "films" ? "film" : "video",
+                ContentUnavailableView("No Films", systemImage: "film",
                                        description: Text(genre == nil ? "Add them with Reel Server on your Mac." : "Nothing in \(genre!)."))
                     .padding(.top, 80)
             }
-            if kind == "films" {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12)], spacing: 18) {
-                    ForEach(shown) { PosterCard(film: $0, width: 108) }
-                }
-                .padding(16)
-            } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 12)], spacing: 18) {
-                    ForEach(shown) { WideCard(film: $0, width: 340) }
-                }
-                .padding(16)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: Metrics.gridPoster(regular) - 4), spacing: regular ? 18 : 12)],
+                      spacing: regular ? 26 : 18) {
+                ForEach(shown) { PosterCard(film: $0, width: Metrics.gridPoster(regular)) }
             }
+            .padding(Metrics.margin(regular))
         }
-        .navigationTitle("Library")
+        .navigationTitle("Films")
         .navigationDestination(for: Film.self) { FilmDetailView(film: $0) }
         .refreshable { await library.refresh() }
         .toolbar {
@@ -244,7 +272,7 @@ struct LibraryView: View {
                     Picker("Sort By", selection: $sort) {
                         ForEach(Sort.allCases) { Text($0.rawValue).tag($0.rawValue) }
                     }
-                    if kind == "films", !library.genres.isEmpty {
+                    if !library.genres.isEmpty {
                         Picker("Genre", selection: $genre) {
                             Text("All Genres").tag(String?.none)
                             ForEach(library.genres, id: \.self) { Text($0).tag(String?.some($0)) }
@@ -263,10 +291,41 @@ struct LibraryView: View {
 struct SearchView: View {
     @EnvironmentObject private var library: Library
     @State private var query = ""
+    @AppStorage("recentSearches") private var recentText = ""
+
+    /// The last searches, newest first. Kept on this device only, and easy to clear (searching.md).
+    private var recent: [String] { recentText.split(separator: "\n").map(String.init) }
+
+    private func remember(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard trimmed.count >= 2 else { return }
+        recentText = ([trimmed] + recent.filter { $0.caseInsensitiveCompare(trimmed) != .orderedSame })
+            .prefix(8).joined(separator: "\n")
+    }
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    private var regular: Bool { sizeClass == .regular }
 
     var body: some View {
         ScrollView {
             if query.isEmpty {
+                if !recent.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Recent Searches").font(.title3.weight(.bold)).accessibilityAddTraits(.isHeader)
+                            Spacer()
+                            Button("Clear") { recentText = "" }
+                        }
+                        ForEach(recent, id: \.self) { text in
+                            Button { query = text } label: {
+                                Label(text, systemImage: "clock.arrow.circlepath")
+                                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding([.horizontal, .top], 16)
+                }
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Genres").font(.title3.weight(.bold)).accessibilityAddTraits(.isHeader)
                     FlowLayout(spacing: 8) {
@@ -281,18 +340,34 @@ struct SearchView: View {
                 .padding(16)
             } else {
                 let results = library.search(query)
-                if results.isEmpty {
+                let shows = library.searchShows(query)
+                if results.isEmpty && shows.isEmpty {
                     ContentUnavailableView.search(text: query).padding(.top, 60)
                 }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12)], spacing: 18) {
-                    ForEach(results) { PosterCard(film: $0, width: 108) }
+                if !shows.isEmpty {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: Metrics.gridPoster(regular) - 4), spacing: regular ? 18 : 12)],
+                              spacing: regular ? 26 : 18) {
+                        ForEach(shows) { ShowCard(show: $0, width: Metrics.gridPoster(regular)) }
+                    }
+                    .padding([.horizontal, .top], Metrics.margin(regular))
                 }
-                .padding(16)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: Metrics.gridPoster(regular) - 4), spacing: regular ? 18 : 12)],
+                          spacing: regular ? 26 : 18) {
+                    ForEach(results) { PosterCard(film: $0, width: Metrics.gridPoster(regular)) }
+                }
+                .padding(Metrics.margin(regular))
             }
         }
         .navigationTitle("Search")
-        .searchable(text: $query, prompt: "Films, people, genres")
+        .searchable(text: $query, prompt: "Films, shows, people, genres")
+        .onSubmit(of: .search) { remember(query) }
+        // Opening something found counts as a search worth remembering, as does picking a genre.
+        .onChange(of: query) { _, text in
+            if library.genres.contains(text) { remember(text) }
+        }
+        .onDisappear { if !query.isEmpty, !library.search(query).isEmpty || !library.searchShows(query).isEmpty { remember(query) } }
         .navigationDestination(for: Film.self) { FilmDetailView(film: $0) }
+        .navigationDestination(for: Show.self) { ShowDetailView(show: $0) }
     }
 }
 
@@ -352,7 +427,7 @@ struct DownloadsView: View {
                             }
                     }
                 } footer: {
-                    Text("Reel uses \(downloads.usedSpace.fileSize). \(Folders.freeSpace.fileSize) free on this iPhone.")
+                    Text("Reel uses \(downloads.usedSpace.fileSize). \(Folders.freeSpace.fileSize) free on this \(Device.name).")
                 }
             }
         }
@@ -374,7 +449,7 @@ struct DownloadRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
-                Text(film.title).font(.headline).lineLimit(2)
+                Text(film.fullTitle).font(.headline).lineLimit(2)
                 Text("\(download.quality.title) · \(download.size.fileSize)").font(.subheadline).foregroundStyle(.secondary)
                 DownloadStatus(film: film, download: download)
             }
@@ -462,7 +537,7 @@ struct SettingsView: View {
             } header: {
                 Text("Account")
             } footer: {
-                Text("Films stream straight from Google. Your Mac only needs to be on to add films and make smaller downloads.")
+                Text("Films and shows stream straight from Google. Your Mac only needs to be on to add them and make smaller downloads.")
             }
 
             Section {
@@ -478,7 +553,7 @@ struct SettingsView: View {
             } header: {
                 Text("Playback")
             } footer: {
-                Text("Reel always streams the original picture, untouched. Sound iPhone can’t play, like DTS-HD, becomes Apple Lossless on the phone, with nothing lost. Streaming 4K uses 15–25 GB an hour.")
+                Text("Reel always streams the original picture, untouched. Sound \(Device.name) can’t play, like DTS-HD, becomes Apple Lossless on the \(Device.name), with nothing lost. Streaming 4K uses 15–25 GB an hour.")
             }
 
             Section {
@@ -488,16 +563,16 @@ struct SettingsView: View {
                 }
                 Toggle("Download Over Mobile Data", isOn: Binding(get: { downloads.overCellular }, set: { downloads.setCellular($0) }))
                 LabeledContent("Used by Downloads", value: downloads.usedSpace.fileSize)
-                LabeledContent("Free on iPhone", value: Folders.freeSpace.fileSize)
+                LabeledContent("Free on \(Device.name)", value: Folders.freeSpace.fileSize)
                 if !downloads.downloads.isEmpty {
                     Button("Delete All Downloads", role: .destructive) { confirmDeleteAll = true }
                 }
             } header: {
                 Text("Downloads")
             } footer: {
-                Text(downloadQuality == "original"
+                Text((downloadQuality == "original"
                      ? "Downloads are the exact original file."
-                     : "Each time you download, choose Original, Medium (1080p) or Low (720p). Your Mac makes Medium and Low copies the first time someone asks, which takes about 45 minutes per film.")
+                     : "Each time you download, choose Original, Medium (1080p) or Low (720p). Your Mac makes Medium and Low copies the first time someone asks, which takes about 45 minutes per film."))
             }
 
             Section("About") {
@@ -519,7 +594,7 @@ struct SettingsView: View {
         .confirmationDialog("Sign out of Google?", isPresented: $confirmSignOut, titleVisibility: .visible) {
             Button("Sign Out", role: .destructive) { Task { await account.signOut() } }
         } message: {
-            Text("Downloaded films stay on this iPhone and keep playing.")
+            Text("Downloaded films stay on this \(Device.name) and keep playing.")
         }
         .confirmationDialog("Delete all downloads?", isPresented: $confirmDeleteAll, titleVisibility: .visible) {
             Button("Delete \(downloads.usedSpace.fileSize)", role: .destructive) {

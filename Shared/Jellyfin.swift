@@ -90,8 +90,30 @@ final class JellyfinClient: @unchecked Sendable {
                        [.init(name: "maxWidth", value: "\(maxWidth)"), .init(name: "quality", value: "90"),
                         .init(name: "tag", value: tag)], withKey: true)
         }
-        // Home videos have no backdrop; their extracted frame (Primary/Thumb) makes a fine one.
+        // An episode has no backdrop of its own; its show's is the one to show.
+        if let parent = item.parentBackdropItemId, let tag = item.parentBackdropImageTags?.first {
+            return url("/Items/\(parent)/Images/Backdrop/0",
+                       [.init(name: "maxWidth", value: "\(maxWidth)"), .init(name: "quality", value: "90"),
+                        .init(name: "tag", value: tag)], withKey: true)
+        }
+        // Otherwise an extracted frame (Primary/Thumb) makes a fine one.
         return imageURL(for: item, type: "Thumb", maxWidth: maxWidth) ?? imageURL(for: item, maxWidth: maxWidth)
+    }
+
+    /// The tall poster: an episode shows its show's.
+    func posterURL(for item: Item, maxWidth: Int) -> URL? {
+        if item.isEpisode, let series = item.seriesId, let tag = item.seriesPrimaryImageTag {
+            return url("/Items/\(series)/Images/Primary",
+                       [.init(name: "maxWidth", value: "\(maxWidth)"), .init(name: "quality", value: "90"),
+                        .init(name: "tag", value: tag)], withKey: true)
+        }
+        return imageURL(for: item, maxWidth: maxWidth)
+    }
+
+    /// The wide picture for a card: a still from an episode, the backdrop of anything else.
+    func stillURL(for item: Item, maxWidth: Int) -> URL? {
+        if item.isEpisode, let still = imageURL(for: item, maxWidth: maxWidth) { return still }
+        return backdropURL(for: item, maxWidth: maxWidth)
     }
 
     // MARK: Requests
@@ -115,6 +137,25 @@ final class JellyfinClient: @unchecked Sendable {
         guard (200..<300).contains(http.statusCode) else {
             let body = String(data: data, encoding: .utf8)?.prefix(300) ?? ""
             throw JellyfinError(status: http.statusCode, message: "Server returned \(http.statusCode). \(body)")
+        }
+        return data
+    }
+
+    /// For bodies that aren't JSON, such as an image.
+    @discardableResult
+    func send(_ method: String, _ path: String, query: [URLQueryItem] = [], body: Data, contentType: String,
+              timeout: TimeInterval = 120) async throws -> Data {
+        var request = URLRequest(url: url(path, query))
+        request.httpMethod = method
+        request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = timeout
+        request.httpBody = body
+        let (data, response) = try await session.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            let text = String(data: data, encoding: .utf8)?.prefix(300) ?? ""
+            throw JellyfinError(status: status, message: "Server returned \(status). \(text)")
         }
         return data
     }
@@ -219,6 +260,8 @@ struct MediaStream: Decodable {
     let width: Int?
     let height: Int?
     let videoRangeType: String?
+    /// Dolby Vision profile: 7 is UHD Blu-ray's two-layer kind, which Apple devices can't play as is.
+    let dvProfile: Int?
     let channels: Int?
     let displayTitle: String?
     let language: String?
@@ -293,9 +336,21 @@ struct SessionInfo: Decodable, Identifiable {
     }
 }
 
+/// One version of a film, as Jellyfin lists it on the film. Its id is the version's own item.
+struct ItemSource: Decodable, Hashable {
+    let id: String
+    let name: String?
+    let path: String?
+    let size: Int64?
+}
+
 struct Item: Decodable, Identifiable, Hashable {
     let id: String
     let name: String?
+    /// A film's versions (one for most films). Present when asked for with fields=MediaSources or on /Items/{id}.
+    let mediaSources: [ItemSource]?
+    /// For an extra: Trailer, BehindTheScenes, Featurette, DeletedScene, Interview, Short…
+    let extraType: String?
     let type: String?
     let productionYear: Int?
     let runTimeTicks: Int64?
@@ -311,6 +366,27 @@ struct Item: Decodable, Identifiable, Hashable {
     let genres: [String]?
     let collectionType: String?
     let primaryImageAspectRatio: Double?
+    // Episodes and shows
+    let seriesName: String?
+    let seriesId: String?
+    let seasonId: String?
+    let indexNumber: Int?          // episode number, or season number for a season
+    let parentIndexNumber: Int?    // season number of an episode
+    let childCount: Int?
+    let seriesPrimaryImageTag: String?
+    let parentBackdropItemId: String?
+    let parentBackdropImageTags: [String]?
+    let parentThumbItemId: String?
+    let parentThumbImageTag: String?
+
+    var isEpisode: Bool { type == "Episode" }
+    var isSeries: Bool { type == "Series" }
+
+    /// "S1 E3", or nil for anything that isn't an episode.
+    var episodeLabel: String? {
+        guard isEpisode, let episode = indexNumber else { return nil }
+        return parentIndexNumber.map { "S\($0) E\(episode)" } ?? "E\(episode)"
+    }
 
     static func == (a: Item, b: Item) -> Bool { a.id == b.id }
     func hash(into h: inout Hasher) { h.combine(id) }

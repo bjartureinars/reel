@@ -67,6 +67,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showPairing) { PairingSheet(server: server) }
+        .modifier(TorrentSheets(torrents: server.torrents))
     }
 }
 
@@ -156,9 +157,11 @@ struct LibraryView: View {
     let kind: LibraryKind
     @State private var targeted = false
     @State private var pendingRemoval: Item?
+    @State private var managed: ManagedFilm?
 
     private var items: [Item] { server.libraries[kind] ?? [] }
-    private var isFilm: Bool { kind == .films }
+    /// Films and shows both have tall posters.
+    private var isFilm: Bool { true }
 
     var body: some View {
         ZStack {
@@ -169,16 +172,26 @@ struct LibraryView: View {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: isFilm ? 150 : 230, maximum: isFilm ? 200 : 320),
                                                  spacing: 20)], spacing: 24) {
                         ForEach(items) { item in
-                            LibraryCard(item: item, imageURL: server.posterURL(for: item, kind: kind), isFilm: isFilm)
-                                .contextMenu {
-                                    if let path = item.path {
-                                        Button("Show in Finder") {
-                                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-                                        }
-                                    }
+                            Button { managed = ManagedFilm(item: item) } label: {
+                                LibraryCard(item: item, imageURL: server.posterURL(for: item, kind: kind), isFilm: isFilm)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityHint("Shows the film’s details and pictures")
+                            .contextMenu {
+                                Button("Show Details") { managed = ManagedFilm(item: item) }
+                                Button(item.isSeries ? "Identify Show…" : "Identify Film…") { managed = ManagedFilm(item: item, page: .identify) }
+                                Button("Change Poster…") { managed = ManagedFilm(item: item, page: .artwork(.poster)) }
+                                Button("Change Backdrop…") { managed = ManagedFilm(item: item, page: .artwork(.backdrop)) }
+                                if let path = item.path, !server.isInDrive(item) {
                                     Divider()
-                                    Button("Remove from Library…", role: .destructive) { pendingRemoval = item }
+                                    Button("Show in Finder") {
+                                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                                    }
                                 }
+                                Divider()
+                                Button(server.isInDrive(item) ? (item.isSeries ? "Delete Show from Google Drive…" : "Delete from Google Drive…")
+                                       : "Move to Trash…", role: .destructive) { pendingRemoval = item }
+                            }
                         }
                     }
                     .padding(24)
@@ -207,21 +220,37 @@ struct LibraryView: View {
         .safeAreaInset(edge: .bottom) {
             if !server.transfers.isEmpty { TransfersBar(server: server) }
         }
-        .alert("Remove “\(pendingRemoval?.title ?? "")” from the library?", isPresented: Binding(
+        .sheet(item: $managed) { FilmSheet(server: server, film: $0) }
+        .alert(removalTitle, isPresented: Binding(
             get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } })
         ) {
-            Button("Remove", role: .destructive) {
-                if let item = pendingRemoval { Task { await server.removeFromLibrary(item) } }
+            Button(removalInDrive ? "Delete" : "Move to Trash", role: .destructive) {
+                if let item = pendingRemoval {
+                    Task { item.isSeries ? await server.removeShow(item) : await server.removeFromLibrary(item) }
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("It disappears from your Apple TV. A film on this Mac goes to the Trash. A film in Google Drive goes to Drive’s Bin, where it can be restored for 30 days.")
+            Text(removalInDrive
+                 ? "It goes to Drive’s Bin, where it can be restored for 30 days. After that Google deletes it for good. It disappears from your Apple TV and iPhone."
+                 : "It disappears from your Apple TV. You can put it back from the Trash.")
         }
+    }
+
+    private var removalInDrive: Bool { pendingRemoval.map(server.isInDrive) ?? false }
+
+    private var removalTitle: String {
+        let title = pendingRemoval?.title ?? ""
+        if pendingRemoval?.isSeries == true {
+            return removalInDrive ? "Delete every episode of “\(title)” from Google Drive?" : "Move every episode of “\(title)” to the Trash?"
+        }
+        return removalInDrive ? "Delete “\(title)” from Google Drive?" : "Move “\(title)” to the Trash?"
     }
 
     private var subtitle: String {
         let n = items.count
-        return n == 0 ? "" : "\(n) \(isFilm ? (n == 1 ? "film" : "films") : (n == 1 ? "video" : "videos"))"
+        if kind == .shows { return n == 0 ? "" : "\(n) \(n == 1 ? "show" : "shows")" }
+        return n == 0 ? "" : "\(n) \(n == 1 ? "film" : "films")"
     }
 
     private var dropHint: String {
@@ -248,19 +277,19 @@ private struct EmptyLibrary: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            Image(systemName: kind == .films ? "film.stack" : "video.badge.plus")
+            Image(systemName: kind == .shows ? "tv" : "film.stack")
                 .font(.system(size: 56, weight: .light))
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
-            Text(kind == .films ? "Drag films here" : "Drag home videos here")
+            Text(kind == .shows ? "Drag TV shows here" : "Drag films here")
                 .font(.title.weight(.semibold))
-            Text(kind == .films
-                 ? "Reel finds posters and details automatically. 4K HDR and Dolby Vision files stream to your Apple TV at full quality."
-                 : "Clips, family videos, anything without a poster. Reel uses a frame from each video as its picture.")
+            Text(kind == .shows
+                 ? "Drag a show’s folder (seasons inside are fine), or episodes named like Friends.S01E01.mkv. Reel finds the show, its seasons and episode details automatically."
+                 : "Reel finds posters and details automatically. 4K HDR and Dolby Vision files stream to your Apple TV at full quality.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: 440)
-            Button(kind == .films ? "Add Films…" : "Add Home Videos…") { addWithPanel(kind) }
+            Button(kind == .shows ? "Add TV Shows…" : "Add Films…") { addWithPanel(kind) }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .padding(.top, 6)
@@ -279,18 +308,8 @@ private struct LibraryCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            AsyncImage(url: imageURL) { phase in
-                if let image = phase.image {
-                    image.resizable().aspectRatio(contentMode: .fill)
-                } else {
-                    ZStack {
-                        LinearGradient(colors: [Color(white: 0.22), Color(white: 0.12)], startPoint: .top, endPoint: .bottom)
-                        Image(systemName: isFilm ? "film" : "video")
-                            .font(.system(size: 28, weight: .light))
-                            .foregroundStyle(.white.opacity(0.45))
-                    }
-                }
-            }
+            // The frame comes first and the picture fills it, so a wide picture can't spill over its neighbours.
+            RemoteArtwork(url: imageURL, symbol: "film")
             .aspectRatio(isFilm ? 2.0 / 3.0 : 16.0 / 9.0, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(alignment: .topTrailing) {
@@ -312,6 +331,7 @@ private struct LibraryCard: View {
                 Text(detailLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }
+        .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .help(item.path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? item.title)
         .accessibilityElement(children: .combine)
@@ -319,7 +339,8 @@ private struct LibraryCard: View {
 
     private var detailLine: String {
         var parts: [String] = []
-        if let y = item.productionYear, isFilm { parts.append(String(y)) }
+        if let y = item.productionYear { parts.append(String(y)) }
+        if item.isSeries { return (parts + ["TV Show"]).joined(separator: " · ") }
         if let r = item.runtimeText { parts.append(r) }
         parts.append(contentsOf: item.badges.filter { $0 != "4K" && $0 != "HD" }.prefix(1))
         return parts.joined(separator: " · ")

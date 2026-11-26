@@ -135,8 +135,8 @@ struct MainTabs: View {
                 .tabItem { Text("Home") }
             NavigationStack { LibraryGrid(collectionType: "movies", title: "Films") }
                 .tabItem { Text("Films") }
-            NavigationStack { LibraryGrid(collectionType: "homevideos", title: "Home Videos") }
-                .tabItem { Text("Home Videos") }
+            NavigationStack { LibraryGrid(collectionType: "tvshows", title: "TV Shows") }
+                .tabItem { Text("TV Shows") }
             NavigationStack { SearchView() }
                 .tabItem { Image(systemName: "magnifyingglass").accessibilityLabel("Search") }
             NavigationStack { SettingsView() }
