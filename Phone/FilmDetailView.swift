@@ -282,6 +282,7 @@ private struct VersionsAndExtras: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var library: Library
     @State private var tab = Tab.versions
+    @State private var comparing = false
 
     enum Tab: String, CaseIterable, Identifiable {
         case versions = "Versions", extras = "Extras"
@@ -305,6 +306,13 @@ private struct VersionsAndExtras: View {
                 switch tabs.count > 1 ? tab : tabs[0] {
                 case .versions:
                     ForEach(versions) { VersionRow(film: $0) }
+                    #if os(macOS)
+                    Button { comparing = true } label: {
+                        Label("Compare Versions…", systemImage: "rectangle.split.1x2")
+                    }
+                    .help("Play two versions at once, one above the other, to compare the picture")
+                    .sheet(isPresented: $comparing) { CompareSetup(versions: versions) }
+                    #endif
                 case .extras:
                     ForEach(extras) { ExtraRow(film: $0) }
                 }

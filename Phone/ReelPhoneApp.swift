@@ -210,6 +210,9 @@ struct RootView: View {
     @EnvironmentObject private var account: GoogleAccount
     @EnvironmentObject private var library: Library
     @ObservedObject private var player = AppModel.shared.player
+    #if os(macOS)
+    @ObservedObject private var compare = CompareModel.shared
+    #endif
 
     var body: some View {
         Group {
@@ -237,7 +240,15 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: player.isPresented)
-        .toolbar(player.isPresented ? .hidden : .automatic, for: .windowToolbar)
+        .overlay {
+            if compare.isPresented {
+                CompareView(model: compare)
+                    .transition(.opacity)
+                    .onDisappear { compare.close() }
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: compare.isPresented)
+        .toolbar(player.isPresented || compare.isPresented ? .hidden : .automatic, for: .windowToolbar)
         #endif
         .alert("Stream Over Mobile Data?", isPresented: Binding(get: { app.cellularPrompt != nil },
                                                                 set: { if !$0 { app.cellularPrompt = nil } })) {

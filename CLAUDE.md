@@ -112,6 +112,14 @@ Started in a claude.ai session on 2026-11-21; moved here 2026-11-22.
 - **App Sandbox** (network client + server): its data is in its own container, apart from Reel Server's Application Support/Reel.
   Its container can't be read from Terminal (TCC). Store must not use iOS file-protection write options on macOS (writes fail silently).
 - Signs in with the iOS OAuth client (works on macOS via ASWebAuthenticationSession). Library first load fetches details 8 at a time.
+- **Compare Versions** (Mac only, `MacPlayer/CompareModel.swift` + `CompareView.swift`): film page → Versions → Compare
+  Versions… plays two versions top/bottom. Each `CompareLane` has its own engine + StreamServer + AVPlayer
+  (`automaticallyWaitsToMinimizeStalling = false`); `lock(at:)` pauses, seeks both exactly, waits for buffer, prerolls and
+  starts both with `setRate(_:time:atHostTime:)`; a 0.25 s check re-locks after a stall or > 80 ms drift; pausing aligns the
+  bottom to the top's exact frame. Sound = the unmuted lane (↑/↓, picker, speaker button). Frame step , / . ; bottom offset
+  in frames (remembered per pair, `compare.offset.<a>.<b>`). A UHD frame's built-in letterbox bars are trimmed to the widest
+  picture so both show at the same size. Doesn't save watch progress. Verified 2026-11-27 with Fellowship 4K vs Blu-ray
+  Extended from Drive (71 + 16 Mbit/s): frame-locked play, pause, sound switch, frame steps, close.
 - Verified 2026-11-26: sign-in, library, playing an Office extra from Drive. Not verified: 4K HDR/DV on this Mac's display,
   downloads, PiP, AirPlay.
 
