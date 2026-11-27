@@ -131,11 +131,11 @@ final class DownloadCenter: NSObject, ObservableObject {
             }
         }
         download.state = .downloading
-        try? FileManager.default.createDirectory(at: download.folder, withIntermediateDirectories: true)
+        attempt("Making a folder") { try FileManager.default.createDirectory(at: download.folder, withIntermediateDirectories: true) }
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         var folder = download.folder
-        try? folder.setResourceValues(values)
+        attempt("Keeping a download out of backups") { try folder.setResourceValues(values) }
     }
 
     func remove(_ download: Download) {
@@ -144,7 +144,7 @@ final class DownloadCenter: NSObject, ObservableObject {
         }
         running[download.id] = nil
         partial[download.id] = nil
-        try? FileManager.default.removeItem(at: download.folder)
+        removeIfPresent(download.folder)
         downloads[download.id] = nil
         save()
         if download.state == .waitingForMac, let film = library?.film(download.id) {
@@ -158,7 +158,9 @@ final class DownloadCenter: NSObject, ObservableObject {
         if download.state == .failed { download.state = download.chunks.isEmpty ? .waitingForMac : .downloading }
         downloads[film.id] = download
         save()
-        if download.state == .waitingForMac { try? await library?.requestCopy(film, download.quality) }
+        if download.state == .waitingForMac {
+            await attempt("Asking the Mac for a copy") { try await library?.requestCopy(film, download.quality) }
+        }
         await topUp()
     }
 
@@ -271,7 +273,7 @@ final class DownloadCenter: NSObject, ObservableObject {
             // Fetch that file again.
             for index in current.chunks.indices where current.chunks[index].driveID == bad || bad.count < 30 {
                 current.chunks[index].done = false
-                try? FileManager.default.removeItem(at: current.url(current.chunks[index].index))
+                removeIfPresent(current.url(current.chunks[index].index))
             }
             current.state = .downloading
             current.problem = nil
@@ -293,14 +295,14 @@ final class DownloadCenter: NSObject, ObservableObject {
     fileprivate func finished(_ film: String, _ chunk: Int, file: URL?, status: Int, error: Error?) {
         running[film]?.remove(chunk)
         guard var download = downloads[film], let index = download.chunks.firstIndex(where: { $0.index == chunk }) else {
-            if let file { try? FileManager.default.removeItem(at: file) }
+            if let file { removeIfPresent(file) }
             return
         }
         if let file {
             let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? -1
             if (status == 206 || (status == 200 && download.chunks[index].length == size)) && size == download.chunks[index].length {
                 let target = download.url(chunk)
-                try? FileManager.default.removeItem(at: target)
+                removeIfPresent(target)
                 do {
                     try FileManager.default.moveItem(at: file, to: target)
                     download.chunks[index].done = true
@@ -308,7 +310,7 @@ final class DownloadCenter: NSObject, ObservableObject {
                     download.problem = error.localizedDescription
                 }
             } else {
-                try? FileManager.default.removeItem(at: file)
+                removeIfPresent(file)
                 if status == 403 || status == 404 { download.state = .failed; download.problem = "Google Drive refused the download (\(status))." }
             }
         }
@@ -352,7 +354,7 @@ extension DownloadCenter: URLSessionDownloadDelegate {
         let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
         // The file at `location` is gone when this returns, so keep it first.
         let kept = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let moved = (try? FileManager.default.moveItem(at: location, to: kept)) != nil
+        let moved = attempt("Keeping a downloaded piece") { try FileManager.default.moveItem(at: location, to: kept) } != nil
         Task { @MainActor in
             self.finished(film, chunk, file: moved ? kept : nil, status: status, error: nil)
         }

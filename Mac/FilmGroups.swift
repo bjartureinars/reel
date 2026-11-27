@@ -201,6 +201,7 @@ private struct ExtraRow: View {
     let film: CloudFilm
     @State private var title = ""
     @State private var confirmDelete = false
+    @State private var problem: String?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -234,10 +235,24 @@ private struct ExtraRow: View {
         .padding(.vertical, 4)
         .onAppear { title = film.extraTitle ?? (film.name as NSString).deletingPathExtension }
         .alert("Delete “\(title)” from Google Drive?", isPresented: $confirmDelete) {
-            Button("Delete", role: .destructive) { Task { try? await cloud.remove(film.id) } }
+            Button("Delete", role: .destructive) {
+                Task {
+                    do {
+                        try await cloud.remove(film.id)
+                    } catch {
+                        logFailure("Deleting an extra", error)
+                        problem = error.localizedDescription
+                    }
+                }
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("It goes to Drive’s Bin, where it can be restored for 30 days.")
+        }
+        .alert("Couldn’t Delete “\(title)”", isPresented: Binding(get: { problem != nil }, set: { if !$0 { problem = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(problem ?? "")
         }
     }
 

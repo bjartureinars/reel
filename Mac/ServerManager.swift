@@ -390,8 +390,8 @@ final class ServerManager: ObservableObject {
         // Reel used to have a Home Videos library. It's taken out of Jellyfin only while empty; the folder stays.
         if let old = folders.first(where: { $0.name == "Home Videos" }), let userId, let parent = old.itemId,
            let inside = try? await client.items(userId: userId, parentId: parent, types: "Movie,Video"), inside.isEmpty {
-            try? await client.send("DELETE", "/Library/VirtualFolders", query: [.init("name", "Home Videos"),
-                                                                                .init("refreshLibrary", "false")])
+            await attempt("Removing the empty Home Videos library") { _ = try await client.send("DELETE", "/Library/VirtualFolders", query: [.init("name", "Home Videos"),
+                                                                                .init("refreshLibrary", "false")]) }
             folders.removeAll { $0.name == "Home Videos" }
         }
         if CloudMount.isMounted(cloud.paths.mount) {
@@ -451,12 +451,12 @@ final class ServerManager: ObservableObject {
             }
         }
         for id in doomed {
-            try? await client.send("DELETE", "/Items/\(id)")
+            await attempt("Removing a vanished item from Jellyfin") { _ = try await client.send("DELETE", "/Items/\(id)") }
         }
     }
 
     func rescan() async {
-        try? await client.send("POST", "/Library/Refresh")
+        await attempt("Asking Jellyfin to rescan") { _ = try await client.send("POST", "/Library/Refresh") }
         scanProgress = 0
     }
 
@@ -522,7 +522,7 @@ final class ServerManager: ObservableObject {
         case .link: destination = folder(for: kind)
         case .move, .copy: destination = kind == .shows ? cloud.paths.shows : cloud.paths.drop
         }
-        try? FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        attempt("Making a folder") { try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true) }
         for url in urls {
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { continue }

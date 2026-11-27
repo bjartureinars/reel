@@ -184,24 +184,24 @@ enum Folders {
     static let support: URL = {
         let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Reel", isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        attempt("Making a folder") { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
         return url
     }()
 
     static let downloads: URL = {
         var url = support.appendingPathComponent("Downloads", isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        attempt("Making a folder") { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
         // Films can be downloaded again from Drive, so they don't belong in iCloud backups.
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
-        try? url.setResourceValues(values)
+        attempt("Keeping downloads out of backups") { try url.setResourceValues(values) }
         return url
     }()
 
     static let artwork: URL = {
         let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Artwork", isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        attempt("Making a folder") { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
         return url
     }()
 
@@ -214,17 +214,18 @@ enum Folders {
 /// Saves a Codable value as JSON in Application Support.
 enum Store {
     static func load<T: Decodable>(_ name: String, as type: T.Type = T.self) -> T? {
-        guard let data = try? Data(contentsOf: Folders.support.appendingPathComponent(name)) else { return nil }
-        return try? JSONDecoder().decode(T.self, from: data)
+        guard let data = try? Data(contentsOf: Folders.support.appendingPathComponent(name)) else { return nil }   // not saved yet
+        // A file that's there but won't read means saved state (watch progress, downloads) is being lost: say so.
+        return attempt("Reading \(name)") { try JSONDecoder().decode(T.self, from: data) }
     }
 
     static func save<T: Encodable>(_ value: T, as name: String) {
-        guard let data = try? JSONEncoder().encode(value) else { return }
+        guard let data = attempt("Encoding \(name)", { try JSONEncoder().encode(value) }) else { return }
         #if os(iOS)
         let options: Data.WritingOptions = [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
         #else
         let options: Data.WritingOptions = [.atomic]   // macOS has no file protection classes: with one, the write fails
         #endif
-        try? data.write(to: Folders.support.appendingPathComponent(name), options: options)
+        attempt("Saving \(name)") { try data.write(to: Folders.support.appendingPathComponent(name), options: options) }
     }
 }

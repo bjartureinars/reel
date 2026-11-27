@@ -534,7 +534,12 @@ struct SettingsView: View {
                         LabeledContent("Updated", value: last.formatted(.relative(presentation: .named)))
                     }
                 } else {
-                    Button("Sign In with Google") { Task { try? await account.signIn(); await library.refresh() } }
+                    Button("Sign In with Google") {
+                        Task {
+                            await attempt("Signing in with Google") { try await account.signIn() }
+                            await library.refresh()
+                        }
+                    }
                 }
             } header: {
                 Text("Account")

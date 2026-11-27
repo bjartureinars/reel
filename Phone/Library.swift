@@ -296,7 +296,7 @@ final class Library: ObservableObject {
                 guard next < stale.count else { return }
                 let item = stale[next]
                 next += 1
-                group.addTask { (item.index, try? await drive.contents(item.driveID)) }
+                group.addTask { (item.index, await attempt("Reading a film's details from Drive") { try await drive.contents(item.driveID) }) }
             }
             for _ in 0..<8 { add() }
             while let (index, data) = await group.next() {
@@ -308,8 +308,8 @@ final class Library: ObservableObject {
             let id = found[index].id
             let revision = infos[id].map { $0.appProperties?["rev"] ?? $0.md5Checksum ?? "" } ?? ""
             if let data = fetched[index], var info = try? JSONDecoder().decode(FilmInfo.self, from: data) {
-                if let poster = info.poster { try? poster.write(to: found[index].posterURL, options: .atomic) }
-                if let backdrop = info.backdrop { try? backdrop.write(to: found[index].backdropURL, options: .atomic) }
+                if let poster = info.poster { attempt("Saving a poster") { try poster.write(to: found[index].posterURL, options: .atomic) } }
+                if let backdrop = info.backdrop { attempt("Saving a backdrop") { try backdrop.write(to: found[index].backdropURL, options: .atomic) } }
                 // Everything else is kept as it came, so fields added later (like an episode's show) survive.
                 info.poster = nil
                 info.backdrop = nil
@@ -332,8 +332,8 @@ final class Library: ObservableObject {
                 continue
             }
             if let data = try? await drive.contents(file.id), let info = try? JSONDecoder().decode(ShowInfo.self, from: data) {
-                if let poster = info.poster { try? poster.write(to: Show.posterURL(id), options: .atomic) }
-                if let backdrop = info.backdrop { try? backdrop.write(to: Show.backdropURL(id), options: .atomic) }
+                if let poster = info.poster { attempt("Saving a show poster") { try poster.write(to: Show.posterURL(id), options: .atomic) } }
+                if let backdrop = info.backdrop { attempt("Saving a show backdrop") { try backdrop.write(to: Show.backdropURL(id), options: .atomic) } }
                 newShows[id] = ShowDetails(info)
                 UserDefaults.standard.set(revision, forKey: "show.rev.\(id)")
             } else {
@@ -552,7 +552,7 @@ final class Library: ObservableObject {
 
     func requestCopy(_ film: Film, _ quality: CopyQuality) async throws {
         if requests[film.id]?[quality].map({ $0.progress.phase != .failed }) == true { return }
-        if let old = requests[film.id]?[quality] { try? await drive.trash(old.driveID) }
+        if let old = requests[film.id]?[quality] { await attempt("Moving a file to Drive’s Bin") { try await drive.trash(old.driveID) } }
         let properties = [PhoneDrive.kind: PhoneDrive.request, "id": film.id, "quality": quality.rawValue, "state": "waiting"]
         let file = try await drive.create(name: "Reel request \(film.title) (\(quality.title))", parent: try await reelFolder(),
                                           properties: properties, data: Data(), type: "text/plain")
@@ -562,7 +562,7 @@ final class Library: ObservableObject {
 
     func cancelRequest(_ film: Film, _ quality: CopyQuality) async {
         guard let request = requests[film.id]?[quality] else { return }
-        try? await drive.trash(request.driveID)
+        await attempt("Moving a file to Drive’s Bin") { try await drive.trash(request.driveID) }
         requests[film.id]?[quality] = nil
     }
 

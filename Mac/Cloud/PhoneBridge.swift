@@ -54,7 +54,7 @@ final class PhoneBridge: ObservableObject {
         guard let files = try? await drive.everything() else { return }
         for file in files where file.appProperties?["id"] == String(filmID)
             && [PhoneDrive.info, PhoneDrive.copy, PhoneDrive.request, PhoneDrive.watch].contains(file.appProperties?[PhoneDrive.kind] ?? "") {
-            try? await drive.trash(file.id)
+            await attempt("Moving a file to Drive’s Bin") { try await drive.trash(file.id) }
         }
     }
 
@@ -274,7 +274,7 @@ final class PhoneBridge: ObservableObject {
         let existing = files.filter { kind($0) == PhoneDrive.show }
         // Never on an empty round: a moment when Jellyfin lists nothing mustn't empty the phone's shows.
         for file in existing where !shows.isEmpty && !shows.contains(file.appProperties?["id"] ?? "") {
-            try? await drive.trash(file.id)
+            await attempt("Moving a file to Drive’s Bin") { try await drive.trash(file.id) }
         }
         var written = 0
         for showID in shows.sorted() where written < 2 {
@@ -400,11 +400,11 @@ final class PhoneBridge: ObservableObject {
             let progress = CopyProgress(properties: properties)
             guard progress.phase == .waiting else { continue }
             guard let film = cloud.film(id), film.verified else {
-                _ = try? await drive.update(request.id, properties: CopyProgress(phase: .failed, detail: "That film isn’t in Reel any more.").properties)
+                await attempt("Updating a file in Google Drive") { _ = try await drive.update(request.id, properties: CopyProgress(phase: .failed, detail: "That film isn’t in Reel any more.").properties) }
                 continue
             }
             if let made = copies.first(where: { $0.appProperties?["id"] == idText && $0.appProperties?["quality"] == quality.rawValue }) {
-                _ = try? await drive.update(request.id, properties: CopyProgress(phase: .ready, progress: 1, copyID: made.id).properties)
+                await attempt("Updating a file in Google Drive") { _ = try await drive.update(request.id, properties: CopyProgress(phase: .ready, progress: 1, copyID: made.id).properties) }
                 continue
             }
             workingOn = request.id
@@ -433,7 +433,7 @@ final class PhoneBridge: ObservableObject {
         let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Reel/phone-copies", isDirectory: true)
         let output = folder.appendingPathComponent("\(film.id)-\(quality.rawValue).mkv")
-        defer { try? FileManager.default.removeItem(at: output) }
+        defer { removeIfPresent(output) }
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let input = cloud.paths.mount.appendingPathComponent(film.folder).appendingPathComponent(film.name)
@@ -476,7 +476,7 @@ final class PhoneBridge: ObservableObject {
             let local = try await Task.detached { try CloudFiles.md5(path).finalize() }.value
                 .map { String(format: "%02x", $0) }.joined()
             guard file.md5Checksum?.lowercased() == local, file.byteCount == size else {
-                try? await drive.trash(file.id)
+                await attempt("Moving a file to Drive’s Bin") { try await drive.trash(file.id) }
                 throw CloudError("Google’s copy didn’t match. Ask again on the iPhone.")
             }
             await report(request, CopyProgress(phase: .ready, progress: 1, copyID: file.id))

@@ -275,7 +275,7 @@ struct EpisodeCard: View {
     private func mark(watched: Bool) {
         guard let client = session.client, let userId = session.userId else { return }
         Task {
-            try? await client.send(watched ? "POST" : "DELETE", "/UserPlayedItems/\(episode.id)", query: [.init("userId", userId)])
+            await attempt("Marking an episode watched") { _ = try await client.send(watched ? "POST" : "DELETE", "/UserPlayedItems/\(episode.id)", query: [.init("userId", userId)]) }
             session.libraryVersion += 1
         }
     }

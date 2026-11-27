@@ -287,7 +287,7 @@ final class PlaybackController: NSObject, AVPlayerViewControllerDelegate {
             "IsPaused": (player?.rate ?? 0) == 0,
             "PositionTicks": positionTicks,
         ]
-        Task { try? await client.send("POST", path, json: body) }
+        Task { await attempt("Reporting playback to Jellyfin") { _ = try await client.send("POST", path, json: body) } }
     }
 
     /// Stops playback, tells the server where we stopped, and ends any remux on the Mac.
@@ -309,8 +309,8 @@ final class PlaybackController: NSObject, AVPlayerViewControllerDelegate {
         engine = nil
         if let client = session?.client, let playSessionId {
             let deviceId = client.deviceId
-            Task { try? await client.send("DELETE", "/Videos/ActiveEncodings",
-                                          query: [.init("deviceId", deviceId), .init("playSessionId", playSessionId)]) }
+            Task { await attempt("Ending the Jellyfin remux") { _ = try await client.send("DELETE", "/Videos/ActiveEncodings",
+                                          query: [.init("deviceId", deviceId), .init("playSessionId", playSessionId)]) } }
         }
         // Let the server record the position before shelves refresh.
         let session = self.session

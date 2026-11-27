@@ -95,7 +95,7 @@ final class TorrentStore: ObservableObject {
     init(cloud: CloudStore, folder: URL) {
         self.cloud = cloud
         self.folder = folder
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        attempt("Making a folder") { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
         jobs = (try? JSONDecoder().decode([TorrentJob].self, from: Data(contentsOf: listURL))) ?? []
     }
 
@@ -103,9 +103,11 @@ final class TorrentStore: ObservableObject {
     private func workdir(_ id: UUID) -> URL { folder.appendingPathComponent(id.uuidString) }
 
     private func save() {
-        guard let data = try? JSONEncoder().encode(jobs) else { return }
-        try? data.write(to: listURL, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: listURL.path)
+        guard let data = attempt("Encoding the torrent list", { try JSONEncoder().encode(jobs) }) else { return }
+        attempt("Saving the torrent list") { try data.write(to: listURL, options: .atomic) }
+        attempt("Making the torrent list private") {
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: listURL.path)
+        }
     }
 
     private func edit(_ id: UUID, _ change: (inout TorrentJob) -> Void) {
@@ -151,7 +153,7 @@ final class TorrentStore: ObservableObject {
                     Task { await cloud.refile(item.filmID, folder: folder, name: name) }
                 } else {
                     let sent = item.parts.compactMap(\.driveID)
-                    Task { for id in sent { _ = try? await drive.update(id, properties: ["folder": folder]) } }
+                    Task { for id in sent { await attempt("Updating a file in Google Drive") { _ = try await drive.update(id, properties: ["folder": folder]) } } }
                 }
             }
         }
@@ -297,14 +299,14 @@ final class TorrentStore: ObservableObject {
         let drive = cloud.driveClient
         Task {
             for item in unfinished {
-                for part in item.parts { if let file = part.driveID { try? await drive.trash(file) } }
+                for part in item.parts { if let file = part.driveID { await attempt("Moving a file to Drive’s Bin") { try await drive.trash(file) } } }
             }
         }
         jobs.removeAll { $0.id == id }
         live[id] = nil
         if choosing == id { choosing = nil }
         save()
-        try? FileManager.default.removeItem(at: workdir(id))
+        removeIfPresent(workdir(id))
     }
 
     func clearFinished() {
@@ -412,7 +414,7 @@ final class TorrentStore: ObservableObject {
             switch state {
             case .done(let file):
                 guard file.md5Checksum == local else {
-                    try? await drive.trash(file.id)
+                    await attempt("Moving a file to Drive’s Bin") { try await drive.trash(file.id) }
                     throw CloudError("Google’s copy didn’t match.")
                 }
                 return file
@@ -442,7 +444,7 @@ final class TorrentStore: ObservableObject {
             helpers[id]?.stop()
             helpers[id] = nil
             live[id] = nil
-            try? FileManager.default.removeItem(at: workdir(id))
+            removeIfPresent(workdir(id))
         }
     }
 
