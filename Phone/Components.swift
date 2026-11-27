@@ -76,6 +76,7 @@ struct PosterCard: View {
                                 .accessibilityHidden(true)
                         }
                     }
+                    .reelHoverLift()
                 Text(film.episodeLabel.map { "\(film.episode?.show ?? "") \($0)" } ?? film.title)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -164,6 +165,7 @@ struct WideCard: View {
                         .background(.black.opacity(0.45), in: Circle())
                 }
             }
+            .reelHoverLift()
     }
 }
 

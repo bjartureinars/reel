@@ -112,6 +112,10 @@ Started in a claude.ai session on 2026-11-21; moved here 2026-11-22.
 - **App Sandbox** (network client + server): its data is in its own container, apart from Reel Server's Application Support/Reel.
   Its container can't be read from Terminal (TCC). Store must not use iOS file-protection write options on macOS (writes fail silently).
 - Signs in with the iOS OAuth client (works on macOS via ASWebAuthenticationSession). Library first load fetches details 8 at a time.
+- Mac film page (2026-11-27, `FilmDetailView.macPage`): 520 pt backdrop with title, meta and buttons on it (gold Resume =
+  Return key, Play from Beginning, round icon buttons with tooltips), then two columns: tagline/overview (selectable)/versions
+  and extras (max 720) | Director, Cast (10), About This File (260). iPhone/iPad keep `phonePage`. `reelHoverLift()`
+  (Support.swift): Mac cards lift 4 % with shadow and edge (edge only with Reduce Motion); iPad gets `.hoverEffect(.lift)`.
 - **Compare Versions** (Mac only, `MacPlayer/CompareModel.swift` + `CompareView.swift`): film page → Versions → Compare
   Versions… plays two versions top/bottom. Each `CompareLane` has its own engine + StreamServer + AVPlayer
   (`automaticallyWaitsToMinimizeStalling = false`); `lock(at:)` pauses, seeks both exactly, waits for buffer, prerolls and

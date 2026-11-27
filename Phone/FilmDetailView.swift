@@ -19,6 +19,38 @@ struct FilmDetailView: View {
 
     var body: some View {
         ScrollView {
+            #if os(macOS)
+            macPage
+            #else
+            phonePage
+            #endif
+        }
+        .ignoresSafeArea(edges: .top)
+        .reelClearNavigationBar()
+        .confirmationDialog("Download Quality", isPresented: $choosingQuality, titleVisibility: .visible) {
+            ForEach(CopyQuality.allCases) { quality in
+                Button(qualityLabel(quality)) { start(quality) }
+            }
+        } message: {
+            Text("Medium and Low are made by your Mac the first time, which takes about 45 minutes. They download straight from Google after that.")
+        }
+        .confirmationDialog("Remove Download?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            if let download {
+                Button(download.state == .ready ? "Remove \(download.size.fileSize)" : "Cancel Download", role: .destructive) {
+                    downloads.remove(download)
+                }
+            }
+        } message: {
+            Text("The film stays in Google Drive.")
+        }
+        .alert("Can’t Download", isPresented: Binding(get: { problem != nil }, set: { if !$0 { problem = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(problem ?? "")
+        }
+    }
+
+    private var phonePage: some View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 VStack(alignment: .leading, spacing: 16) {
@@ -48,31 +80,157 @@ struct FilmDetailView: View {
                     .padding(.top, 8)
             }
             .padding(.bottom, 32)
-        }
-        .ignoresSafeArea(edges: .top)
-        .reelClearNavigationBar()
-        .confirmationDialog("Download Quality", isPresented: $choosingQuality, titleVisibility: .visible) {
-            ForEach(CopyQuality.allCases) { quality in
-                Button(qualityLabel(quality)) { start(quality) }
-            }
-        } message: {
-            Text("Medium and Low are made by your Mac the first time, which takes about 45 minutes. They download straight from Google after that.")
-        }
-        .confirmationDialog("Remove Download?", isPresented: $confirmDelete, titleVisibility: .visible) {
-            if let download {
-                Button(download.state == .ready ? "Remove \(download.size.fileSize)" : "Cancel Download", role: .destructive) {
-                    downloads.remove(download)
+    }
+
+    #if os(macOS)
+    // MARK: Mac: a wide page, like the TV app on a Mac
+
+    private var macPage: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            macHeader
+            HStack(alignment: .top, spacing: 48) {
+                VStack(alignment: .leading, spacing: 18) {
+                    if let download, download.state != .ready {
+                        DownloadStatus(film: current, download: download)
+                            .padding(12)
+                            .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    if let tagline = current.info?.tagline {
+                        Text(tagline).font(.title3.weight(.semibold)).italic()
+                    }
+                    if let overview = current.info?.overview {
+                        Text(overview)
+                            .font(.body)
+                            .lineSpacing(3)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    VersionsAndExtras(film: current)
                 }
+                .frame(maxWidth: 720, alignment: .leading)
+                VStack(alignment: .leading, spacing: 22) {
+                    macPeople
+                    facts
+                }
+                .frame(width: 260, alignment: .leading)
             }
-        } message: {
-            Text("The film stays in Google Drive.")
+            .padding(.horizontal, 40)
+            related
         }
-        .alert("Can’t Download", isPresented: Binding(get: { problem != nil }, set: { if !$0 { problem = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(problem ?? "")
+        .padding(.bottom, 40)
+    }
+
+    private var macHeader: some View {
+        ZStack(alignment: .bottomLeading) {
+            Artwork(url: current.backdropURL, symbol: current.isHomeVideo ? "video" : "film")
+                .frame(height: 520)
+                .frame(maxWidth: .infinity)
+                .clipped()
+                .overlay {
+                    LinearGradient(stops: [.init(color: .black.opacity(0.45), location: 0), .init(color: .clear, location: 0.25),
+                                           .init(color: .black.opacity(0.35), location: 0.55), .init(color: .black, location: 1)],
+                                   startPoint: .top, endPoint: .bottom)
+                }
+                .overlay {
+                    // Darkens the left, where the title and buttons sit, so they read over any picture.
+                    LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .leading, endPoint: .center)
+                }
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 10) {
+                if let episode = current.episode, let label = current.episodeLabel {
+                    Text("\(episode.show) · \(label)").font(.headline).foregroundStyle(Theme.gold)
+                }
+                Text(current.title)
+                    .font(.system(size: 40, weight: .bold))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
+                    .accessibilityAddTraits(.isHeader)
+                HStack(spacing: 10) {
+                    if !current.metaLine.isEmpty { Text(current.metaLine).foregroundStyle(.secondary) }
+                    Badges(film: current)
+                    if let genres = current.info?.genres, !genres.isEmpty {
+                        Text(genres.prefix(3).joined(separator: ", ")).foregroundStyle(.secondary)
+                    }
+                }
+                .font(.subheadline)
+                macButtons.padding(.top, 8)
+            }
+            .frame(maxWidth: 760, alignment: .leading)
+            .padding(.horizontal, 40)
+            .padding(.bottom, 8)
         }
     }
+
+    private var macButtons: some View {
+        let resume = library.resumeSeconds(current)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Button { app.play(current) } label: {
+                    Label(resume > 0 ? "Resume" : "Play", systemImage: "play.fill")
+                }
+                .buttonStyle(MacButtonStyle(prominent: true))
+                .keyboardShortcut(.defaultAction)
+                .help(download?.state == .ready ? "Plays the copy on this Mac (Return)" : "Streams the original from Google Drive (Return)")
+                if resume > 0 {
+                    Button { app.play(current, from: 0) } label: {
+                        Label("Play from Beginning", systemImage: "arrow.counterclockwise")
+                    }
+                    .buttonStyle(MacButtonStyle(prominent: false))
+                }
+                MacIconButton(title: downloadTitle, symbol: downloadSymbol) { downloadTapped() }
+                MacIconButton(title: state.favorite ? "Remove from My List" : "Add to My List",
+                              symbol: state.favorite ? "checkmark" : "plus") {
+                    library.update(current) { $0.favorite.toggle() }
+                }
+                MacIconButton(title: state.watched ? "Mark as Unwatched" : "Mark as Watched",
+                              symbol: state.watched ? "eye.fill" : "eye") {
+                    library.update(current) {
+                        $0.watched.toggle()
+                        $0.position = 0
+                    }
+                }
+            }
+            if resume > 0, let total = current.seconds {
+                HStack(spacing: 10) {
+                    ProgressLine(value: resume / total).frame(width: 220)
+                    Text("\((total - resume).runtimeText) left").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if download?.state == .ready && download?.quality != .original {
+                Button("Stream Original Instead") { app.play(current, forceStream: true) }
+                    .buttonStyle(.link)
+                    .font(.subheadline)
+            }
+        }
+    }
+
+    @ViewBuilder private var macPeople: some View {
+        let cast = current.info?.people.filter { $0.kind == "Actor" } ?? []
+        let directors = current.info?.people.filter { $0.kind == "Director" }.map(\.name) ?? []
+        if !directors.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(directors.count == 1 ? "Director" : "Directors").font(.headline).accessibilityAddTraits(.isHeader)
+                Text(directors.joined(separator: ", ")).foregroundStyle(.secondary)
+            }
+            .font(.subheadline)
+        }
+        if !cast.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Cast").font(.headline).accessibilityAddTraits(.isHeader)
+                ForEach(cast.prefix(10), id: \.self) { person in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(person.name)
+                        if let role = person.role, !role.isEmpty {
+                            Text(role).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
+            .font(.subheadline)
+        }
+    }
+    #endif
 
     private var header: some View {
         ZStack(alignment: .bottomLeading) {
@@ -347,6 +505,7 @@ private struct VersionRow: View {
             .padding(12)
             .frame(minHeight: 56)
             .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .reelHoverLift(cornerRadius: 12, scale: 1.01)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -380,6 +539,7 @@ private struct ExtraRow: View {
                     .overlay(alignment: .bottom) {
                         if let progress = library.progress(film) { ProgressLine(value: progress).padding(6) }
                     }
+                    .reelHoverLift(cornerRadius: 8)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(film.title).font(.subheadline.weight(.semibold)).lineLimit(2)
                     Text([film.info?.extra?.kind.title, film.seconds?.runtimeText].compactMap { $0 }.joined(separator: " · "))
@@ -395,3 +555,51 @@ private struct ExtraRow: View {
         .accessibilityHint("Plays it")
     }
 }
+
+#if os(macOS)
+/// The film page's buttons on the Mac: sized to their words, not the width of the page.
+private struct MacButtonStyle: ButtonStyle {
+    let prominent: Bool
+    @State private var hovering = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .foregroundStyle(prominent ? .black : .white)
+            .padding(.horizontal, 22)
+            .frame(minHeight: 40)
+            .background(background(pressed: configuration.isPressed), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+
+    private func background(pressed: Bool) -> Color {
+        if prominent { return Theme.gold.opacity(pressed ? 0.75 : hovering ? 0.9 : 1) }
+        return Color.white.opacity(pressed ? 0.3 : hovering ? 0.22 : 0.15)
+    }
+}
+
+/// A round button with only a symbol; its name shows as a tooltip and is read by VoiceOver.
+private struct MacIconButton: View {
+    let title: String
+    let symbol: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 16, weight: .semibold))
+                .frame(width: 40, height: 40)
+                .background(Color.white.opacity(hovering ? 0.25 : 0.15), in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .help(title)
+        .accessibilityLabel(title)
+    }
+}
+#endif

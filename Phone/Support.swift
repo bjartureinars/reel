@@ -67,6 +67,39 @@ extension View {
     }
 }
 
+/// Cards answer the pointer: on the Mac they lift a little, with a shadow and a thin edge (only the edge with Reduce Motion);
+/// on iPad with a trackpad, the system lift.
+struct HoverLift: ViewModifier {
+    var cornerRadius: CGFloat = 10
+    var scale: CGFloat = 1.04
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(.white.opacity(hovering ? 0.4 : 0), lineWidth: 1.5)
+            }
+            .scaleEffect(hovering && !reduceMotion ? scale : 1)
+            .shadow(color: .black.opacity(hovering ? 0.55 : 0), radius: hovering ? 14 : 0, y: hovering ? 8 : 0)
+            .animation(.easeOut(duration: 0.15), value: hovering)
+            .onHover { hovering = $0 }
+        #else
+        content
+            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .hoverEffect(.lift)
+        #endif
+    }
+}
+
+extension View {
+    func reelHoverLift(cornerRadius: CGFloat = 10, scale: CGFloat = 1.04) -> some View {
+        modifier(HoverLift(cornerRadius: cornerRadius, scale: scale))
+    }
+}
+
 enum AppState {
     static var voiceOverRunning: Bool {
         #if os(iOS)

@@ -71,6 +71,7 @@ struct ShowCard: View {
                 Artwork(url: show.posterURL, symbol: "tv")
                     .frame(width: width, height: width * 1.5)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .reelHoverLift()
                 Text(show.title)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -301,6 +302,7 @@ struct EpisodeRow: View {
                             .padding(10)
                             .background(.black.opacity(0.45), in: Circle())
                     }
+                    .reelHoverLift(cornerRadius: 8)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Play \(film.episodeLabel ?? ""), \(film.title)")
